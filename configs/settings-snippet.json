@@ -1,0 +1,41 @@
+{
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "Write",
+        "hooks": [{"type": "command", "command": "$HOME/.claude/hooks/claude-hooks pre-tool-use", "timeout": 5000}]
+      },
+      {
+        "matcher": "Edit",
+        "hooks": [{"type": "command", "command": "$HOME/.claude/hooks/claude-hooks pre-tool-use", "timeout": 5000}]
+      },
+      {
+        "matcher": "MultiEdit",
+        "hooks": [{"type": "command", "command": "$HOME/.claude/hooks/claude-hooks pre-tool-use", "timeout": 5000}]
+      },
+      {
+        "matcher": "Bash",
+        "hooks": [{"type": "command", "command": "$HOME/.claude/hooks/claude-hooks pre-tool-use", "timeout": 3000}]
+      }
+    ],
+    "PostToolUse": [
+      {
+        "matcher": "Write",
+        "hooks": [{"type": "command", "command": "$HOME/.claude/hooks/claude-hooks post-tool-use", "timeout": 5000}]
+      },
+      {
+        "matcher": "Edit",
+        "hooks": [{"type": "command", "command": "$HOME/.claude/hooks/claude-hooks post-tool-use", "timeout": 5000}]
+      },
+      {
+        "matcher": "MultiEdit",
+        "hooks": [{"type": "command", "command": "$HOME/.claude/hooks/claude-hooks post-tool-use", "timeout": 5000}]
+      }
+    ],
+    "Stop": [
+      {
+        "hooks": [{"type": "command", "command": "$HOME/.claude/hooks/claude-hooks stop", "timeout": 3000}]
+      }
+    ]
+  }
+}
