@@ -271,10 +271,10 @@ func (e *Engine) runValidators(ctx context.Context, file *core.FileAnalysis) ([]
 			continue
 		}
 
-		if !result.IsValid {
-			allViolations = append(allViolations, result.Violations...)
-			allSuggestions = append(allSuggestions, result.Suggestions...)
-		}
+		// ВСЕГДА передаём violations - и критические, и предупреждения
+		// determineAction() решит какое действие предпринять
+		allViolations = append(allViolations, result.Violations...)
+		allSuggestions = append(allSuggestions, result.Suggestions...)
 	}
 
 	return allViolations, allSuggestions, nil
