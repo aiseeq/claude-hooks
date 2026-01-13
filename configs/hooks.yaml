@@ -40,6 +40,8 @@ tools:
       - ":(){ :|:& };:"
   formatter:
     enabled: true
+    go_format: true
+    ts_format: true
     formatters:
       go: "gofmt -w"
       ts: "prettier --write"
