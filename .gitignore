@@ -1,0 +1,17 @@
+# Binaries
+bin/
+*.exe
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# Go
+go.work
+go.work.sum
+
+# OS
+.DS_Store
+Thumbs.db

@@ -1,0 +1,52 @@
+# Claude Hooks Configuration
+general:
+  log_level: "info"
+  log_file: "~/.claude/logs/claude-hooks.log"
+  timeout: 5000
+
+logger:
+  level: "info"
+  format: "text"
+  output: "file"
+  file: "~/.claude/logs/claude-hooks.log"
+
+# TIER-1 validators - block dangerous patterns
+validators:
+  emergency_defaults:
+    enabled: true
+    exceptions:
+      - "*_test.go"
+      - "test_*.go"
+  runtime_exit:
+    enabled: true
+    exceptions:
+      - "cmd/"
+      - "main.go"
+      - "*_test.go"
+  secrets:
+    enabled: true
+    exceptions:
+      - "*_test.go"
+      - "*.md"
+
+# Tools
+tools:
+  bash:
+    enabled: true
+    blocked_patterns:
+      - "--headed"
+      - "rm -rf /"
+      - "rm -rf ~"
+      - ":(){ :|:& };:"
+  formatter:
+    enabled: true
+    formatters:
+      go: "gofmt -w"
+      ts: "prettier --write"
+      tsx: "prettier --write"
+      js: "prettier --write"
+      jsx: "prettier --write"
+  notifier:
+    enabled: true
+    sound: true
+    desktop: true
