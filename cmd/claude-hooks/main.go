@@ -61,6 +61,7 @@ func execute() int {
 		newHookCmd("post-tool-use", "Обработать PostToolUse hook", &exitCode),
 		newHookCmd("stop", "Обработать Stop hook", &exitCode),
 		newHookCmd("notification", "Обработать Notification hook", &exitCode),
+		newNotifyCmd(),
 		newConfigCmd(),
 		newVersionCmd(),
 		newDeliverAlertCmd(),
@@ -295,6 +296,63 @@ func enabledLabel(enabled bool) string {
 		return "включён"
 	}
 	return "выключен"
+}
+
+// newNotifyCmd создает команду отправки уведомления из сторонних инструментов.
+// Claude Code присылает события сам, а другим агентам (например opencode)
+// нужен способ показать такое же уведомление с переходом к окну по клику
+func newNotifyCmd() *cobra.Command {
+	var (
+		alert     desktop.Alert
+		windowPID int
+		activate  bool
+	)
+
+	cmd := &cobra.Command{
+		Use:   "notify",
+		Short: "Показать уведомление с переходом к окну по клику",
+		Long: `Показывает уведомление и по клику переводит фокус на окно терминала.
+
+Окно определяется по процессу: указанному через --window-pid либо самому вызывающему.
+Команда возвращает управление сразу, не дожидаясь ни звука, ни клика.
+
+Пример вызова из плагина стороннего агента:
+  claude-hooks notify --title "opencode ждёт ответа" --message "Проект: saga" --window-pid $$`,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			if alert.Title == "" {
+				return fmt.Errorf("не задан --title")
+			}
+
+			if activate {
+				if windowPID == 0 {
+					windowPID = os.Getpid()
+				}
+				// Окно принадлежит одному из процессов в цепочке до эмулятора терминала
+				alert.ActivatePIDs = desktop.ProcessAncestors(windowPID)
+			}
+
+			executable, err := os.Executable()
+			if err != nil {
+				return fmt.Errorf("failed to locate own executable: %w", err)
+			}
+
+			return desktop.DeliverInBackground(executable, notifier.WatchCommand, alert)
+		},
+	}
+
+	flags := cmd.Flags()
+	flags.StringVar(&alert.Title, "title", "", "заголовок уведомления")
+	flags.StringVar(&alert.Message, "message", "", "текст уведомления")
+	flags.StringVar(&alert.AppName, "app-name", "claude-hooks", "имя приложения в уведомлении")
+	flags.StringVar(&alert.Icon, "icon", "utilities-terminal", "значок уведомления")
+	flags.DurationVar(&alert.Timeout, "timeout", 30*time.Second, "время показа уведомления")
+	flags.BoolVar(&alert.Sound, "sound", true, "проиграть звук")
+	flags.BoolVar(&alert.Desktop, "desktop", true, "показать уведомление")
+	flags.IntVar(&windowPID, "window-pid", 0, "процесс, чьё окно активируется по клику (по умолчанию — вызывающий)")
+	flags.BoolVar(&activate, "activate-window", true, "переводить фокус на окно по клику")
+	flags.StringVar(&alert.ActionLabel, "action-label", "Перейти к окну", "подпись действия уведомления")
+
+	return cmd
 }
 
 // newDeliverAlertCmd создает команду фоновой доставки оповещения.
