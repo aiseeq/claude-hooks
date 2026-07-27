@@ -2,138 +2,105 @@ package tools
 
 import (
 	"context"
+	"fmt"
 	"os/exec"
 	"strings"
 
 	"github.com/aiseeq/claude-hooks/internal/core"
 )
 
-// FormatterTool автоматическое форматирование кода
+// formatter описывает внешний форматтер для группы расширений
+type formatter struct {
+	command    string
+	args       []string
+	extensions []string
+}
+
+// FormatterTool форматирует файлы после записи (PostToolUse)
 type FormatterTool struct {
 	*BaseTool
-	goFormat bool
-	tsFormat bool
+	formatters []formatter
 }
 
-// NewFormatterTool создает новый formatter tool
+// NewFormatterTool создает инструмент автоформатирования
 func NewFormatterTool(config core.ToolConfig, logger core.Logger) (*FormatterTool, error) {
-	// Formatter работает в PostToolUse хуке
-	supportedTools := []string{"Write", "Edit", "MultiEdit"}
-	base := NewBaseTool("formatter", config.Enabled, supportedTools, logger)
+	var formatters []formatter
 
-	tool := &FormatterTool{
-		BaseTool: base,
-		goFormat: config.GoFormat,
-		tsFormat: config.TSFormat,
+	if config.GoFormat {
+		formatters = append(formatters, formatter{
+			command:    "gofmt",
+			args:       []string{"-w"},
+			extensions: []string{".go"},
+		})
+	}
+	if config.TSFormat {
+		formatters = append(formatters, formatter{
+			command:    "prettier",
+			args:       []string{"--write"},
+			extensions: []string{".ts", ".tsx", ".js", ".jsx"},
+		})
 	}
 
-	return tool, nil
+	return &FormatterTool{
+		BaseTool:   NewBaseTool("formatter", config.Enabled, []string{"Write", "Edit", "MultiEdit"}, logger),
+		formatters: formatters,
+	}, nil
 }
 
-// ValidateTool выполняет форматирование файлов
+// ValidateTool выполняет форматирование файла
 func (t *FormatterTool) ValidateTool(ctx context.Context, input *core.ToolInput) (*core.ValidationResult, error) {
-	if !t.IsEnabled() {
-		return &core.ValidationResult{IsValid: true}, nil
-	}
-
-	// Formatter only runs in post-tool-use phase (after file is written)
-	phase, _ := ctx.Value("hook_phase").(string)
-	if phase != "post" {
+	// Форматирование имеет смысл только после записи файла на диск
+	if !t.IsEnabled() || core.PhaseFromContext(ctx) != core.PhasePost || input.FilePath == "" {
 		return &core.ValidationResult{IsValid: true}, nil
 	}
 
 	var violations []core.Violation
 	var suggestions []string
 
-	filePath := extractFilePath(input)
-	if filePath == "" {
-		return &core.ValidationResult{IsValid: true}, nil
-	}
+	for _, f := range t.formatters {
+		if !core.IsSupportedFileType(input.FilePath, f.extensions) {
+			continue
+		}
 
-	t.logger.Debug("formatting file", "file", filePath)
-
-	// Форматируем Go файлы
-	if t.goFormat && t.isGoFile(filePath) {
-		if formatted, err := t.formatGoFile(ctx, filePath); err != nil {
-			t.logger.Warn("failed to format Go file", "file", filePath, "error", err)
+		formatted, err := t.run(ctx, f, input.FilePath)
+		switch {
+		case err != nil:
+			t.Logger().Warn("formatting failed", "file", input.FilePath, "formatter", f.command, "error", err)
 			violations = append(violations, core.Violation{
 				Type:       "format_error",
-				Message:    "Ошибка форматирования Go файла: " + err.Error(),
-				Suggestion: "Проверь синтаксис Go кода",
+				Message:    fmt.Sprintf("%s не смог отформатировать файл: %v", f.command, err),
+				Suggestion: "Проверь синтаксис файла",
 				Severity:   core.LevelWarning,
 			})
-		} else if formatted {
-			suggestions = append(suggestions, "Go файл автоматически отформатирован")
+		case formatted:
+			suggestions = append(suggestions, fmt.Sprintf("Файл отформатирован через %s", f.command))
 		}
 	}
 
-	// Форматируем TypeScript файлы
-	if t.tsFormat && t.isTSFile(filePath) {
-		if formatted, err := t.formatTSFile(ctx, filePath); err != nil {
-			t.logger.Warn("failed to format TS file", "file", filePath, "error", err)
-			violations = append(violations, core.Violation{
-				Type:       "format_error",
-				Message:    "Ошибка форматирования TS файла: " + err.Error(),
-				Suggestion: "Проверь синтаксис TypeScript кода",
-				Severity:   core.LevelWarning,
-			})
-		} else if formatted {
-			suggestions = append(suggestions, "TypeScript файл автоматически отформатирован")
-		}
-	}
-
+	// Форматирование не блокирует операцию: файл уже записан
 	return &core.ValidationResult{
-		IsValid:     true, // Formatter не блокирует операции
+		IsValid:     true,
 		Violations:  violations,
 		Suggestions: suggestions,
 	}, nil
 }
 
-// isGoFile проверяет является ли файл Go файлом
-func (t *FormatterTool) isGoFile(filePath string) bool {
-	return strings.HasSuffix(filePath, ".go")
-}
-
-// isTSFile проверяет является ли файл TypeScript файлом
-func (t *FormatterTool) isTSFile(filePath string) bool {
-	return strings.HasSuffix(filePath, ".ts") ||
-		strings.HasSuffix(filePath, ".tsx") ||
-		strings.HasSuffix(filePath, ".js") ||
-		strings.HasSuffix(filePath, ".jsx")
-}
-
-// formatGoFile форматирует Go файл с помощью gofmt
-func (t *FormatterTool) formatGoFile(ctx context.Context, filePath string) (bool, error) {
-	// Проверяем существует ли gofmt
-	if _, err := exec.LookPath("gofmt"); err != nil {
-		t.logger.Debug("gofmt not found, skipping Go formatting")
+// run запускает форматтер. Возвращает false если инструмент не установлен
+func (t *FormatterTool) run(ctx context.Context, f formatter, filePath string) (bool, error) {
+	if _, err := exec.LookPath(f.command); err != nil {
+		t.Logger().Debug("formatter not found, skipping", "formatter", f.command)
 		return false, nil
 	}
 
-	// Выполняем форматирование
-	cmd := exec.CommandContext(ctx, "gofmt", "-w", filePath)
-	if err := cmd.Run(); err != nil {
+	args := append(append([]string{}, f.args...), filePath)
+	output, err := exec.CommandContext(ctx, f.command, args...).CombinedOutput()
+	if err != nil {
+		if message := strings.TrimSpace(string(output)); message != "" {
+			return false, fmt.Errorf("%s: %s", err, message)
+		}
 		return false, err
 	}
 
-	t.logger.Info("formatted Go file", "file", filePath)
-	return true, nil
-}
-
-// formatTSFile форматирует TypeScript файл с помощью prettier
-func (t *FormatterTool) formatTSFile(ctx context.Context, filePath string) (bool, error) {
-	// Проверяем существует ли prettier
-	if _, err := exec.LookPath("prettier"); err != nil {
-		t.logger.Debug("prettier not found, skipping TS formatting")
-		return false, nil
-	}
-
-	// Выполняем форматирование
-	cmd := exec.CommandContext(ctx, "prettier", "--write", filePath)
-	if err := cmd.Run(); err != nil {
-		return false, err
-	}
-
-	t.logger.Info("formatted TS file", "file", filePath)
+	t.Logger().Debug("file formatted", "file", filePath, "formatter", f.command)
 	return true, nil
 }

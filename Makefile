@@ -1,68 +1,64 @@
 BINARY_NAME=claude-hooks
 VERSION=$(shell git describe --tags --always --dirty 2>/dev/null || echo "dev")
 BUILD_DIR=bin
-GO_FILES=$(shell find . -name '*.go' -not -path './vendor/*')
+INSTALL_DIR=$(HOME)/.claude/hooks
+CONFIG_FILE=$(INSTALL_DIR)/config.yaml
 
 LDFLAGS=-ldflags "-X main.Version=$(VERSION)"
 
-.PHONY: all build install uninstall test clean help
+.PHONY: all build install uninstall test test-race cover fmt lint version help
 
 all: build
 
-build: ## Build the binary
+build: ## Собрать бинарь в bin/
 	@mkdir -p $(BUILD_DIR)
 	go build $(LDFLAGS) -o $(BUILD_DIR)/$(BINARY_NAME) ./cmd/claude-hooks
 
-install: build ## Install to ~/bin and config to ~/.claude/hooks
-	@mkdir -p $(HOME)/bin
-	@cp $(BUILD_DIR)/$(BINARY_NAME) $(HOME)/bin/
-	@mkdir -p $(HOME)/.claude/hooks
-	@mkdir -p $(HOME)/.claude/logs
-	@cp configs/hooks.yaml $(HOME)/.claude/hooks/config.yaml
-	@echo "Installed $(BINARY_NAME) to $(HOME)/bin/"
-	@echo "Config at $(HOME)/.claude/hooks/config.yaml"
+install: build ## Установить бинарь и конфигурацию в ~/.claude/hooks
+	@mkdir -p $(INSTALL_DIR) $(HOME)/.claude/logs
+	@cp $(BUILD_DIR)/$(BINARY_NAME) $(INSTALL_DIR)/
+	@if [ -f $(CONFIG_FILE) ]; then \
+		cp configs/hooks.yaml $(CONFIG_FILE).new; \
+		echo "Конфигурация сохранена: существующий $(CONFIG_FILE) не изменён"; \
+		echo "Новая версия: $(CONFIG_FILE).new"; \
+	else \
+		cp configs/hooks.yaml $(CONFIG_FILE); \
+		echo "Конфигурация создана: $(CONFIG_FILE)"; \
+	fi
+	@echo "Бинарь установлен: $(INSTALL_DIR)/$(BINARY_NAME)"
 	@echo ""
-	@echo "Add to ~/.claude/settings.json:"
-	@echo '  "hooks": {'
-	@echo '    "PreToolUse": ['
-	@echo '      {"matcher": "Write|Edit|MultiEdit", "hooks": [{"type": "command", "command": "$$HOME/bin/claude-hooks pre-tool-use", "timeout": 5000}]},'
-	@echo '      {"matcher": "Bash", "hooks": [{"type": "command", "command": "$$HOME/bin/claude-hooks pre-tool-use", "timeout": 3000}]}'
-	@echo '    ],'
-	@echo '    "PostToolUse": ['
-	@echo '      {"matcher": "Write|Edit|MultiEdit", "hooks": [{"type": "command", "command": "$$HOME/bin/claude-hooks post-tool-use", "timeout": 5000}]}'
-	@echo '    ],'
-	@echo '    "Stop": ['
-	@echo '      {"matcher": "", "hooks": [{"type": "command", "command": "$$HOME/bin/claude-hooks stop", "timeout": 3000}]}'
-	@echo '    ]'
-	@echo '  }'
+	@echo "Добавь блок hooks из configs/settings-snippet.json в ~/.claude/settings.json"
 
-uninstall: ## Remove installed files
-	rm -f $(HOME)/bin/$(BINARY_NAME)
-	rm -f $(HOME)/.claude/hooks/config.yaml
-	@echo "Uninstalled $(BINARY_NAME)"
+uninstall: ## Удалить установленные файлы
+	rm -f $(INSTALL_DIR)/$(BINARY_NAME)
+	@echo "Удалён $(INSTALL_DIR)/$(BINARY_NAME) (конфигурация оставлена)"
 
-test: ## Run all tests
-	go test -v ./...
+test: ## Запустить тесты
+	go test ./...
 
-test-integration: build ## Run integration tests
-	@./scripts/test-integration.sh
+test-race: ## Запустить тесты с детектором гонок
+	go test -race ./...
 
-clean: ## Clean build artifacts
-	rm -rf $(BUILD_DIR)
-	go clean
+cover: ## Показать покрытие тестами
+	go test -coverprofile=coverage.out ./...
+	go tool cover -func=coverage.out | tail -1
 
-fmt: ## Format code
-	gofmt -w $(GO_FILES)
+fmt: ## Отформатировать код
+	gofmt -w .
 
-lint: ## Run linter
+lint: ## Проверить код линтером
+	go vet ./...
 	@if command -v golangci-lint >/dev/null 2>&1; then \
 		golangci-lint run; \
 	else \
-		echo "golangci-lint not installed"; \
+		echo "golangci-lint не установлен, выполнен только go vet"; \
 	fi
 
-version: ## Show version
+clean: ## Удалить артефакты сборки
+	rm -rf $(BUILD_DIR) coverage.out
+
+version: ## Показать версию
 	@echo $(VERSION)
 
-help: ## Show this help
+help: ## Показать список целей
 	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) | sort | awk 'BEGIN {FS = ":.*?## "}; {printf "\033[36m%-15s\033[0m %s\n", $$1, $$2}'

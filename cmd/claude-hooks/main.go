@@ -2,7 +2,6 @@ package main
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"io"
 	"os"
@@ -11,459 +10,335 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/aiseeq/claude-hooks/internal/core"
+	"github.com/aiseeq/claude-hooks/internal/desktop"
 	"github.com/aiseeq/claude-hooks/internal/processor"
+	"github.com/aiseeq/claude-hooks/internal/tools/notifier"
 )
 
-// Logger для claude hooks
-var claudeHooksLogger core.Logger
+// Exit-коды, которые понимает Claude Code:
+// 0 — операция разрешена, 1 — ошибка самого хука (не блокирует),
+// 2 — операция заблокирована, stderr передается модели
+const (
+	exitAllowed = 0
+	exitError   = 1
+	exitBlocked = 2
+)
 
 var (
 	configPath string
 	verbose    bool
 	timeout    time.Duration
-	exitCode   int
 
-	// Версионная информация (встраивается через ldflags при сборке)
-	Version     = "dev"
-	BuildNumber = "0"
-	BuildTime   = "unknown"
-	GitCommit   = "unknown"
+	// Version подставляется через ldflags при сборке
+	Version = "dev"
 )
 
 func main() {
-	// Инициализируем logger
-	var err error
-	claudeHooksLogger, err = core.NewLogger(core.DefaultLoggerConfig())
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "Failed to initialize logger: %v\n", err)
-		os.Exit(1)
-	}
+	os.Exit(execute())
+}
+
+// execute запускает CLI и возвращает exit-код для Claude Code
+func execute() int {
+	exitCode := exitAllowed
 
 	rootCmd := &cobra.Command{
-		Use:   "claude-hooks",
-		Short: "Claude Code Hooks unified processor",
-		Long: `Claude Code Hooks unified Go application for processing PreToolUse, PostToolUse, and Stop hooks.
-Replaces multiple bash scripts with a single, efficient, and maintainable solution.`,
-		Run: func(cmd *cobra.Command, args []string) {
-			cmd.Help()
+		Use:           "claude-hooks",
+		Short:         "Claude Code hooks processor",
+		Long:          "Обработчик хуков Claude Code: проверка операций перед выполнением, автоформатирование и уведомления.",
+		SilenceUsage:  true,
+		SilenceErrors: true,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			return cmd.Help()
 		},
 	}
 
-	// Глобальные флаги
-	rootCmd.PersistentFlags().StringVarP(&configPath, "config", "c", "", "Path to config file")
-	rootCmd.PersistentFlags().BoolVarP(&verbose, "verbose", "v", false, "Verbose output")
-	rootCmd.PersistentFlags().DurationVar(&timeout, "timeout", 5*time.Second, "Operation timeout")
+	rootCmd.PersistentFlags().StringVarP(&configPath, "config", "c", "", "путь к файлу конфигурации")
+	rootCmd.PersistentFlags().BoolVarP(&verbose, "verbose", "v", false, "подробный вывод")
+	rootCmd.PersistentFlags().DurationVar(&timeout, "timeout", 5*time.Second, "таймаут обработки")
 
-	// Добавляем подкоманды
 	rootCmd.AddCommand(
-		newPreToolUseCmd(),
-		newPostToolUseCmd(),
-		newStopCmd(),
-		newTestCmd(),
+		newHookCmd("pre-tool-use", "Обработать PreToolUse hook", &exitCode),
+		newHookCmd("post-tool-use", "Обработать PostToolUse hook", &exitCode),
+		newHookCmd("stop", "Обработать Stop hook", &exitCode),
+		newHookCmd("notification", "Обработать Notification hook", &exitCode),
 		newConfigCmd(),
 		newVersionCmd(),
+		newDeliverAlertCmd(),
 	)
 
 	if err := rootCmd.Execute(); err != nil {
-		claudeHooksLogger.Error("Root command execution failed", "error", err.Error(), "operation", "main_execute", "component", "claude_hooks")
-		exitCode = 1
+		fmt.Fprintf(os.Stderr, "claude-hooks: %v\n", err)
+		if exitCode == exitAllowed {
+			exitCode = exitError
+		}
 	}
 
-	// Graceful shutdown с возвратом exit code
-	os.Exit(exitCode)
+	return exitCode
 }
 
-// newPreToolUseCmd создает команду для PreToolUse hook
-func newPreToolUseCmd() *cobra.Command {
+// newHookCmd создает команду обработки хука, записывающую exit-код по указателю
+func newHookCmd(hookType, short string, exitCode *int) *cobra.Command {
 	return &cobra.Command{
-		Use:   "pre-tool-use",
-		Short: "Process PreToolUse hook",
-		Long:  "Processes PreToolUse hook for Write, Edit, MultiEdit operations",
+		Use:   hookType,
+		Short: short,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			code, err := runHook(cmd.Context(), "pre-tool-use")
-			exitCode = code
+			code, err := runHook(cmd.Context(), hookType)
+			*exitCode = code
 			return err
-		},
-	}
-}
-
-// newPostToolUseCmd создает команду для PostToolUse hook
-func newPostToolUseCmd() *cobra.Command {
-	return &cobra.Command{
-		Use:   "post-tool-use",
-		Short: "Process PostToolUse hook",
-		Long:  "Processes PostToolUse hook for auto-formatting and cleanup",
-		RunE: func(cmd *cobra.Command, args []string) error {
-			code, err := runHook(cmd.Context(), "post-tool-use")
-			exitCode = code
-			return err
-		},
-	}
-}
-
-// newStopCmd создает команду для Stop hook
-func newStopCmd() *cobra.Command {
-	return &cobra.Command{
-		Use:   "stop",
-		Short: "Process Stop hook",
-		Long:  "Processes Stop hook for notifications and cleanup",
-		RunE: func(cmd *cobra.Command, args []string) error {
-			code, err := runHook(cmd.Context(), "stop")
-			exitCode = code
-			return err
-		},
-	}
-}
-
-// newTestCmd создает команду для тестирования
-func newTestCmd() *cobra.Command {
-	cmd := &cobra.Command{
-		Use:   "test",
-		Short: "Test hook rules",
-		Long:  "Test hook rules against sample files and commands",
-	}
-
-	cmd.AddCommand(
-		&cobra.Command{
-			Use:   "validators",
-			Short: "Test all validators",
-			RunE: func(cmd *cobra.Command, args []string) error {
-				return runValidatorTests(cmd.Context())
-			},
-		},
-		&cobra.Command{
-			Use:   "advisors",
-			Short: "Test all advisors",
-			RunE: func(cmd *cobra.Command, args []string) error {
-				return runAdvisorTests(cmd.Context())
-			},
-		},
-		&cobra.Command{
-			Use:   "tools",
-			Short: "Test tool validators",
-			RunE: func(cmd *cobra.Command, args []string) error {
-				return runToolTests(cmd.Context())
-			},
-		},
-	)
-
-	return cmd
-}
-
-// newConfigCmd создает команду для работы с конфигурацией
-func newConfigCmd() *cobra.Command {
-	cmd := &cobra.Command{
-		Use:   "config",
-		Short: "Configuration management",
-		Long:  "Manage hook configuration",
-	}
-
-	cmd.AddCommand(
-		&cobra.Command{
-			Use:   "show",
-			Short: "Show current configuration",
-			RunE: func(cmd *cobra.Command, args []string) error {
-				return showConfig(cmd.Context())
-			},
-		},
-		&cobra.Command{
-			Use:   "validate",
-			Short: "Validate configuration file",
-			RunE: func(cmd *cobra.Command, args []string) error {
-				return validateConfigFile(cmd.Context())
-			},
-		},
-		&cobra.Command{
-			Use:   "init",
-			Short: "Initialize default configuration",
-			RunE: func(cmd *cobra.Command, args []string) error {
-				return initConfig(cmd.Context())
-			},
-		},
-	)
-
-	return cmd
-}
-
-// newVersionCmd создает команду для отображения версии
-func newVersionCmd() *cobra.Command {
-	return &cobra.Command{
-		Use:   "version",
-		Short: "Show version information",
-		Long: `Display detailed version information including build number, time, and git commit.
-Each build automatically increments the build number through the Makefile system.`,
-		Run: func(cmd *cobra.Command, args []string) {
-			if verbose {
-				claudeHooksLogger.Info("🚀 Claude Hooks Detailed Version Information", "version", Version, "build_number", BuildNumber, "build_time", BuildTime, "git_commit", GitCommit, "built_with", "Go", "operation", "show_version", "component", "claude_hooks")
-			} else {
-				claudeHooksLogger.Info("Claude Hooks version", "version", Version, "build_number", BuildNumber, "git_commit", GitCommit, "built_with", "Go", "operation", "show_version", "component", "claude_hooks")
-			}
 		},
 	}
 }
 
 // runHook выполняет основную логику хука
 func runHook(ctx context.Context, hookType string) (int, error) {
-	// Создаем контекст с таймаутом
 	ctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 
-	// Загружаем конфигурацию
 	config, err := core.LoadConfig(configPath)
 	if err != nil {
-		return 1, fmt.Errorf("failed to load config: %w", err)
+		return exitError, fmt.Errorf("failed to load config: %w", err)
 	}
 
-	// Создаем логгер
-	logger, err := core.NewLogger(&config.Logger)
+	logger, err := core.NewLogger(config.Logger)
 	if err != nil {
-		return 1, fmt.Errorf("failed to create logger: %w", err)
+		return exitError, fmt.Errorf("failed to create logger: %w", err)
 	}
 
-	// Создаем процессор
-	proc, err := processor.New(config, logger)
+	engine, err := processor.New(config, logger)
 	if err != nil {
-		return 1, fmt.Errorf("failed to create processor: %w", err)
+		return exitError, fmt.Errorf("failed to create processor: %w", err)
 	}
 
-	// Читаем входные данные из stdin
-	input, err := io.ReadAll(os.Stdin)
+	input, err := readInput(os.Stdin, hookType)
 	if err != nil {
-		return 1, fmt.Errorf("failed to read input: %w", err)
+		return exitError, err
 	}
 
-	// Обрабатываем в зависимости от типа хука
 	var response *core.HookResponse
 	switch hookType {
+	case "pre-tool-use":
+		response, err = engine.ProcessPreToolUse(ctx, input)
+	case "post-tool-use":
+		response, err = engine.ProcessPostToolUse(ctx, input)
 	case "stop":
-		// Для stop hook парсим входные данные для получения transcript_path
-		toolInput, parseErr := core.ParseToolInput(input)
-		if parseErr != nil {
-			logger.Debug("failed to parse stop hook input, using empty ToolInput", "error", parseErr, "input_size", len(input))
-			// Создаем минимальный ToolInput для stop hook без transcript_path
-			toolInput = &core.ToolInput{
-				ToolName: "Stop",
-			}
-		}
-		// Гарантируем правильный ToolName независимо от успеха парсинга
-		toolInput.ToolName = "Stop"
-
-		// ProcessStop doesn't need toolInput parameter
-		response, err = proc.ProcessStop(ctx)
-	case "pre-tool-use", "post-tool-use":
-		// Парсим входные данные для tool hooks
-		toolInput, parseErr := core.ParseToolInput(input)
-		if parseErr != nil {
-			return 1, fmt.Errorf("failed to parse input: %w", parseErr)
-		}
-
-		if hookType == "pre-tool-use" {
-			if verbose {
-				fmt.Printf("🚨 CALLING ProcessPreToolUse with tool=%s, file=%s\n", toolInput.ToolName, toolInput.FilePath)
-			}
-			response, err = proc.ProcessPreToolUse(ctx, toolInput)
-			if verbose {
-				fmt.Printf("🚨 ProcessPreToolUse RETURNED: err=%v\n", err)
-			}
-		} else {
-			response, err = proc.ProcessPostToolUse(ctx, toolInput)
-		}
+		response, err = engine.ProcessStop(ctx, input)
+	case "notification":
+		response, err = engine.ProcessNotification(ctx, input)
 	default:
-		return 1, fmt.Errorf("unknown hook type: %s", hookType)
+		return exitError, fmt.Errorf("unknown hook type: %s", hookType)
 	}
 
 	if err != nil {
 		logger.Error("hook processing failed", "hook_type", hookType, "error", err)
-		return 1, err
+		return exitError, err
 	}
 
-	// Выводим результат
-	if err := outputResponse(response, verbose); err != nil {
-		return 1, fmt.Errorf("failed to output response: %w", err)
-	}
+	printResponse(logger, response)
 
-	// Возвращаем соответствующий exit code
-	switch response.Action {
-	case core.HookActionBlock:
-		return 2, nil // Блокируем операцию
-	case core.HookActionWarn:
-		return 2, nil // Blocking warning для видимости в интерфейсе Claude Code
-	case core.HookActionAllow:
-		return 0, nil // Разрешаем
+	if response.Action == core.HookActionAllow {
+		return exitAllowed, nil
 	}
-
-	return 0, nil
+	// Warn и Block одинаково возвращают 2: только этот код доносит сообщение до модели
+	return exitBlocked, nil
 }
 
-// outputResponse выводит ответ хука
-func outputResponse(response *core.HookResponse, verbose bool) error {
-	// Минимальное логирование согласно CLAUDE.md принципам
-	if verbose {
-		claudeHooksLogger.Debug("Hook response", "action", string(response.Action), "operation", "output_response")
+// sessionEvents события сессии, приходящие без tool_input:
+// имя инструмента для них задаёт сам хук
+var sessionEvents = map[string]string{
+	"stop":         core.EventStop,
+	"notification": core.EventNotification,
+}
+
+// readInput читает и разбирает данные хука из stdin.
+// Для событий сессии ошибка разбора не критична: уведомить можно и без деталей
+func readInput(stdin io.Reader, hookType string) (*core.ToolInput, error) {
+	data, err := io.ReadAll(stdin)
+	if err != nil {
+		return nil, fmt.Errorf("failed to read input: %w", err)
 	}
 
-	// КРИТИЧЕСКОЕ: если есть модифицированный tool input, выводим его в stdout в JSON формате
-	// Claude Code использует stdout для получения модифицированных параметров
-	if response.ModifiedToolInput != nil {
-		modifiedJSON, err := json.Marshal(response.ModifiedToolInput)
-		if err != nil {
-			claudeHooksLogger.Error("❌ ERROR: Failed to serialize modified tool input", "error", err.Error(), "operation", "output_response", "component", "claude_hooks")
-			fmt.Fprintf(os.Stderr, "❌ ERROR: Failed to serialize modified tool input: %v\n", err)
-		} else {
-			// Убрано избыточное логирование modified tool input согласно CLAUDE.md
-			// Выводим модифицированные параметры в stdout для Claude Code
-			fmt.Print(string(modifiedJSON))
+	event, isSessionEvent := sessionEvents[hookType]
+
+	input, err := core.ParseToolInput(data)
+	if err != nil {
+		if isSessionEvent {
+			return &core.ToolInput{ToolName: event}, nil
 		}
+		return nil, fmt.Errorf("failed to parse input: %w", err)
 	}
 
+	if isSessionEvent {
+		input.ToolName = event
+	}
+
+	return input, nil
+}
+
+// printResponse выводит результат: stderr читает Claude Code при exit-коде 2
+func printResponse(logger core.Logger, response *core.HookResponse) {
 	switch response.Action {
-	case core.HookActionBlock:
-		// Минимальное WARN логирование - только ключевая информация
-		claudeHooksLogger.Warn("Hook blocked operation", "message", response.Message)
+	case core.HookActionBlock, core.HookActionWarn:
+		logger.Warn("hook blocked operation",
+			"action", string(response.Action),
+			"message", response.Message,
+			"violations", len(response.Violations),
+		)
 
-		// Просто выводим сообщение как есть - без префиксов
-		fmt.Fprintf(os.Stderr, "%s\n", response.Message)
-		if len(response.Suggestions) > 0 {
-			fmt.Fprintf(os.Stderr, "💡 Suggestions:\n")
-			for _, suggestion := range response.Suggestions {
-				fmt.Fprintf(os.Stderr, "   • %s\n", suggestion)
-				// Убрано избыточное логирование suggestions согласно CLAUDE.md
-			}
-		}
-	case core.HookActionWarn:
-		// Минимальное WARN логирование согласно CLAUDE.md
-		claudeHooksLogger.Warn("Hook warning", "message", response.Message)
-
-		fmt.Fprintf(os.Stderr, "⚠️  WARNING: %s\n", response.Message)
-		if len(response.Suggestions) > 0 {
-			fmt.Fprintf(os.Stderr, "💡 Suggestions:\n")
-			for _, suggestion := range response.Suggestions {
-				fmt.Fprintf(os.Stderr, "   • %s\n", suggestion)
-				// Убрано избыточное логирование suggestions согласно CLAUDE.md
-			}
+		fmt.Fprintln(os.Stderr, response.Message)
+		for _, suggestion := range response.Suggestions {
+			fmt.Fprintf(os.Stderr, "  • %s\n", suggestion)
 		}
 	case core.HookActionAllow:
-		// Минимальное INFO логирование только в verbose режиме
 		if verbose {
-			claudeHooksLogger.Info("Hook allowed", "message", response.Message)
-		}
-
-		if verbose {
-			fmt.Fprintf(os.Stderr, "✅ ALLOWED: Operation passed all checks\n")
-		}
-		// Показываем модификации команд в stderr без избыточного логирования
-		if response.ModifiedToolInput != nil {
-			fmt.Fprintf(os.Stderr, "🔄 COMMAND MODIFIED: %s\n", response.ModifiedToolInput.Command)
+			fmt.Fprintln(os.Stderr, "✅ проверки пройдены")
 		}
 	}
 
-	// Выводим детальную информацию о нарушениях в verbose режиме
-	if verbose && len(response.Violations) > 0 {
-		// Убрано избыточное логирование violations согласно CLAUDE.md
-
-		fmt.Fprintf(os.Stderr, "\n📋 Violations:\n")
-		for _, v := range response.Violations {
-			// Убрано избыточное логирование violation details
-
-			fmt.Fprintf(os.Stderr, "   • %s: %s\n", v.Type, v.Message)
-			if v.Suggestion != "" {
-				fmt.Fprintf(os.Stderr, "     💡 %s\n", v.Suggestion)
-			}
-		}
+	if !verbose {
+		return
 	}
 
-	// Показываем directory warnings ВСЕГДА (не только в verbose)
-	if len(response.Violations) > 0 {
-		for _, v := range response.Violations {
-			if v.Type == "directory_navigation_warning" {
-				// Убрано избыточное логирование directory warnings
+	for _, violation := range response.Violations {
+		fmt.Fprintf(os.Stderr, "  [%s] %s:%d %s\n",
+			violation.Severity, violation.Type, violation.Line, violation.Message)
+	}
+	fmt.Fprintf(os.Stderr, "⏱  %.1f ms\n", response.ProcessTime)
+}
 
-				fmt.Fprintf(os.Stderr, "\n%s\n", v.Message)
-				if v.Suggestion != "" {
-					fmt.Fprintf(os.Stderr, "%s\n", v.Suggestion)
+// newConfigCmd создает команду управления конфигурацией
+func newConfigCmd() *cobra.Command {
+	cmd := &cobra.Command{
+		Use:   "config",
+		Short: "Управление конфигурацией",
+	}
+
+	cmd.AddCommand(
+		&cobra.Command{
+			Use:   "show",
+			Short: "Показать текущую конфигурацию",
+			RunE: func(cmd *cobra.Command, args []string) error {
+				return showConfig()
+			},
+		},
+		&cobra.Command{
+			Use:   "validate",
+			Short: "Проверить файл конфигурации",
+			RunE: func(cmd *cobra.Command, args []string) error {
+				path := configPathOrDefault()
+				if _, err := core.LoadConfig(path); err != nil {
+					return err
 				}
-			}
-		}
-	}
+				fmt.Printf("конфигурация корректна: %s\n", path)
+				return nil
+			},
+		},
+		&cobra.Command{
+			Use:   "init",
+			Short: "Создать конфигурацию по умолчанию",
+			RunE: func(cmd *cobra.Command, args []string) error {
+				path := configPathOrDefault()
+				if _, err := os.Stat(path); err == nil {
+					return fmt.Errorf("файл уже существует: %s", path)
+				}
+				if err := core.SaveConfig(core.DefaultConfig(), path); err != nil {
+					return err
+				}
+				fmt.Printf("конфигурация создана: %s\n", path)
+				return nil
+			},
+		},
+	)
 
-	if verbose {
-		// Убрано избыточное логирование processing time
-		fmt.Fprintf(os.Stderr, "⏱️  Processing time: %v\n", response.ProcessTime)
-	}
-
-	return nil
+	return cmd
 }
 
-// runValidatorTests запускает тесты валидаторов
-func runValidatorTests(ctx context.Context) error {
-	claudeHooksLogger.Warn("⚠️ Validator testing not implemented yet", "operation", "run_validator_tests", "component", "claude_hooks")
-	fmt.Println("⚠️ NOTICE: Validator testing is not implemented yet")
-	fmt.Println("📝 TODO: Implement comprehensive validator tests")
-	return fmt.Errorf("not implemented: validator testing functionality")
-}
-
-// runAdvisorTests запускает тесты советчиков
-func runAdvisorTests(ctx context.Context) error {
-	claudeHooksLogger.Warn("⚠️ Advisor testing not implemented yet", "operation", "run_advisor_tests", "component", "claude_hooks")
-	fmt.Println("⚠️ NOTICE: Advisor testing is not implemented yet")
-	fmt.Println("📝 TODO: Implement comprehensive advisor tests")
-	return fmt.Errorf("not implemented: advisor testing functionality")
-}
-
-// runToolTests запускает тесты инструментов
-func runToolTests(ctx context.Context) error {
-	claudeHooksLogger.Warn("⚠️ Tool testing not implemented yet", "operation", "run_tool_tests", "component", "claude_hooks")
-	fmt.Println("⚠️ NOTICE: Tool testing is not implemented yet")
-	fmt.Println("📝 TODO: Implement comprehensive tool tests")
-	return fmt.Errorf("not implemented: tool testing functionality")
-}
-
-// showConfig показывает текущую конфигурацию
-func showConfig(ctx context.Context) error {
-	config, err := core.LoadConfig(configPath)
+// showConfig печатает состояние валидаторов и инструментов
+func showConfig() error {
+	path := configPathOrDefault()
+	config, err := core.LoadConfig(path)
 	if err != nil {
 		return err
 	}
 
-	claudeHooksLogger.Info("📋 Current configuration", "config_file", configPath, "log_level", config.General.LogLevel, "timeout_ms", config.General.Timeout, "operation", "show_config", "component", "claude_hooks")
+	fmt.Printf("Конфигурация: %s\n", path)
+	if config.Logger.Output == "file" {
+		fmt.Printf("Логи: %s (уровень %s, ротация %d МБ)\n\n",
+			config.Logger.LogFile, config.Logger.Level, config.Logger.MaxSizeMB)
+	} else {
+		fmt.Printf("Логи: %s (уровень %s)\n\n", config.Logger.Output, config.Logger.Level)
+	}
 
-	claudeHooksLogger.Info("🔍 Validators", "operation", "show_config", "component", "claude_hooks")
-	for name, cfg := range config.Validators {
-		status := "disabled"
-		if cfg.Enabled {
-			status = "enabled"
-		}
-		claudeHooksLogger.Info("Validator status", "name", name, "status", status, "enabled", cfg.Enabled, "operation", "show_config", "component", "claude_hooks")
+	fmt.Println("Валидаторы:")
+	for name, validatorConfig := range config.Validators {
+		fmt.Printf("  %-20s %s\n", name, enabledLabel(validatorConfig.Enabled))
+	}
+
+	fmt.Println("\nИнструменты:")
+	for name, toolConfig := range config.Tools {
+		fmt.Printf("  %-20s %s\n", name, enabledLabel(toolConfig.Enabled))
 	}
 
 	return nil
 }
 
-// validateConfigFile валидирует конфигурационный файл
-func validateConfigFile(ctx context.Context) error {
-	_, err := core.LoadConfig(configPath)
-	if err != nil {
-		claudeHooksLogger.Error("❌ Configuration validation failed", "error", err.Error(), "config_path", configPath, "operation", "validate_config_file", "component", "claude_hooks")
-		return err
+// configPathOrDefault возвращает заданный путь конфигурации либо путь по умолчанию
+func configPathOrDefault() string {
+	if configPath != "" {
+		return configPath
 	}
-
-	claudeHooksLogger.Info("✅ Configuration is valid", "config_path", configPath, "operation", "validate_config_file", "component", "claude_hooks")
-	return nil
+	return core.DefaultConfigPath()
 }
 
-// initConfig создает конфигурационный файл по умолчанию
-func initConfig(ctx context.Context) error {
-	if configPath == "" {
-		homeDir, _ := os.UserHomeDir()
-		configPath = homeDir + "/.claude/hooks/config.yaml"
-		claudeHooksLogger.Info("Default config path set", "config_path", configPath, "home_dir", homeDir, "operation", "init_config", "component", "claude_hooks")
+// enabledLabel возвращает текстовое состояние компонента
+func enabledLabel(enabled bool) string {
+	if enabled {
+		return "включён"
+	}
+	return "выключен"
+}
+
+// newDeliverAlertCmd создает команду фоновой доставки оповещения.
+// Хук запускает её отдельным процессом и сразу завершается: ожидание клика
+// по уведомлению длится дольше, чем Claude Code готов ждать хук
+func newDeliverAlertCmd() *cobra.Command {
+	var (
+		alert       desktop.Alert
+		pids        string
+		actionLabel string
+	)
+
+	cmd := &cobra.Command{
+		Use:    notifier.WatchCommand,
+		Short:  "Показать уведомление и обработать клик по нему",
+		Hidden: true,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			alert.ActivatePIDs = desktop.ParseInts(pids)
+			alert.ActionLabel = actionLabel
+			return desktop.Deliver(cmd.Context(), alert)
+		},
 	}
 
-	config := core.DefaultConfig()
-	if err := core.SaveConfig(config, configPath); err != nil {
-		return fmt.Errorf("failed to save config: %w", err)
-	}
+	flags := cmd.Flags()
+	flags.StringVar(&alert.Title, "title", "", "заголовок уведомления")
+	flags.StringVar(&alert.Message, "message", "", "текст уведомления")
+	flags.StringVar(&alert.AppName, "app-name", "Claude Code", "имя приложения")
+	flags.StringVar(&alert.Icon, "icon", "utilities-terminal", "значок уведомления")
+	flags.DurationVar(&alert.Timeout, "timeout", 10*time.Second, "время показа уведомления")
+	flags.BoolVar(&alert.Sound, "sound", true, "проиграть звук")
+	flags.BoolVar(&alert.Desktop, "desktop", true, "показать уведомление")
+	flags.StringVar(&pids, "pids", "", "процессы, чьё окно активируется по клику")
+	flags.StringVar(&actionLabel, "action-label", "", "подпись действия уведомления")
 
-	claudeHooksLogger.Info("✅ Default configuration created", "config_path", configPath, "operation", "init_config", "component", "claude_hooks")
-	return nil
+	return cmd
+}
+
+// newVersionCmd создает команду вывода версии
+func newVersionCmd() *cobra.Command {
+	return &cobra.Command{
+		Use:   "version",
+		Short: "Показать версию",
+		Run: func(cmd *cobra.Command, args []string) {
+			fmt.Printf("claude-hooks %s\n", Version)
+		},
+	}
 }

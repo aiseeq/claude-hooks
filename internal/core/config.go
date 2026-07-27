@@ -1,7 +1,10 @@
 package core
 
 import (
+	"bytes"
+	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -11,91 +14,75 @@ import (
 
 // Config основная конфигурация хуков
 type Config struct {
-	General    GeneralConfig              `yaml:"general"`
 	Validators map[string]ValidatorConfig `yaml:"validators"`
 	Tools      map[string]ToolConfig      `yaml:"tools"`
 	Logger     LoggerConfig               `yaml:"logger"`
 }
 
-// GeneralConfig общие настройки
-type GeneralConfig struct {
-	LogLevel string `yaml:"log_level"`
-	LogFile  string `yaml:"log_file"`
-	Timeout  int    `yaml:"timeout"`
-}
-
-// ValidatorConfig конфигурация валидатора
+// ValidatorConfig конфигурация валидатора.
+// Exceptions поддерживает glob-паттерны ("*_test.go") и подстроки пути ("/cmd/")
 type ValidatorConfig struct {
-	Enabled           bool     `yaml:"enabled"`
-	ExceptionPaths    []string `yaml:"exception_paths"`
-	ExceptionFiles    []string `yaml:"exception_files"`
-	CustomPatterns    []string `yaml:"custom_patterns"`
-	SuggestionMessage string   `yaml:"suggestion_message"`
+	Enabled    bool     `yaml:"enabled"`
+	Exceptions []string `yaml:"exceptions"`
 
-	// Специфичные для emergency_defaults validator
-	CaseSensitive bool `yaml:"case_sensitive"`
+	// Специфичные для runtime_exit
+	GoFilesOnly bool `yaml:"go_files_only"`
 
-	// Специфичные для panic validator
-	GoFilesOnly     bool     `yaml:"go_files_only"`
-	TestExceptions  []string `yaml:"test_exceptions"`
-	ProductionPaths []string `yaml:"production_paths"`
-
-	// Специфичные для secrets validator
-	JWTPattern           string   `yaml:"jwt_pattern"`
-	WalletPattern        string   `yaml:"wallet_pattern"`
-	TestConfigExceptions []string `yaml:"test_config_exceptions"`
+	// Специфичные для secrets
+	JWTPattern    string `yaml:"jwt_pattern"`
+	WalletPattern string `yaml:"wallet_pattern"`
+	APIKeyPattern string `yaml:"api_key_pattern"`
 }
 
 // ToolConfig конфигурация инструмента
 type ToolConfig struct {
-	Enabled             bool              `yaml:"enabled"`
-	DangerousCommands   []string          `yaml:"dangerous_commands"`
-	BlockedPatterns     []string          `yaml:"blocked_patterns"`
-	Formatters          map[string]string `yaml:"formatters"`
-	GoFormat            bool              `yaml:"go_format"`
-	TSFormat            bool              `yaml:"ts_format"`
-	KDEOnly             bool              `yaml:"kde_only"`
-	FlashDuration       int               `yaml:"flash_duration"`
-	WorkDir             string            `yaml:"work_dir"`
-	Sound               bool              `yaml:"sound"`
-	Desktop             bool              `yaml:"desktop"`
+	Enabled bool `yaml:"enabled"`
+
+	// Специфичные для bash
+	BlockedPatterns []string `yaml:"blocked_patterns"`
+
+	// Специфичные для formatter
+	GoFormat bool `yaml:"go_format"`
+	TSFormat bool `yaml:"ts_format"`
+
+	// Специфичные для notifier
+	Sound   bool `yaml:"sound"`
+	Desktop bool `yaml:"desktop"`
+	// ActivateOnClick переводит фокус на окно терминала по клику на уведомление (KDE)
+	ActivateOnClick bool `yaml:"activate_on_click"`
 }
 
-// LoadConfig загружает конфигурацию из файла
+// LoadConfig загружает конфигурацию из файла.
+// Если файл отсутствует, возвращается конфигурация по умолчанию без записи на диск:
+// хук вызывается часто и параллельно, поэтому побочные эффекты здесь недопустимы
 func LoadConfig(configPath string) (*Config, error) {
-	// Если путь не указан, используем значение по умолчанию
 	if configPath == "" {
-		configPath = getDefaultConfigPath()
+		configPath = DefaultConfigPath()
 	}
 
-	// Проверяем существование файла
-	if _, err := os.Stat(configPath); os.IsNotExist(err) {
-		// Если файл не существует, создаем дефолтную конфигурацию
-		config := DefaultConfig()
-		if err := SaveConfig(config, configPath); err != nil {
-			return nil, fmt.Errorf("failed to create default config: %w", err)
-		}
-		return config, nil
-	}
-
-	// Читаем файл
 	data, err := os.ReadFile(configPath)
 	if err != nil {
-		return nil, fmt.Errorf("failed to read config file: %w", err)
+		if os.IsNotExist(err) {
+			return DefaultConfig(), nil
+		}
+		return nil, fmt.Errorf("failed to read config file %s: %w", configPath, err)
 	}
 
-	// Парсим YAML
+	// Неизвестные ключи — ошибка: молча проигнорированная опечатка в имени поля
+	// означает незаметно отключённую проверку
 	var config Config
-	if err := yaml.Unmarshal(data, &config); err != nil {
-		return nil, fmt.Errorf("failed to parse config file: %w", err)
+	decoder := yaml.NewDecoder(bytes.NewReader(data))
+	decoder.KnownFields(true)
+	// io.EOF означает пустой файл — работаем на значениях по умолчанию
+	if err := decoder.Decode(&config); err != nil && !errors.Is(err, io.EOF) {
+		return nil, fmt.Errorf("failed to parse config file %s: %w", configPath, err)
 	}
 
-	// Расширяем ~ в путях конфигурации
+	applyLoggerDefaults(&config.Logger)
 	expandConfigPaths(&config)
 
-	// Валидируем конфигурацию
 	if err := validateConfig(&config); err != nil {
-		return nil, fmt.Errorf("config validation failed: %w", err)
+		return nil, fmt.Errorf("config validation failed in %s: %w", configPath, err)
 	}
 
 	return &config, nil
@@ -103,19 +90,16 @@ func LoadConfig(configPath string) (*Config, error) {
 
 // SaveConfig сохраняет конфигурацию в файл
 func SaveConfig(config *Config, configPath string) error {
-	// Создаем директорию если не существует
-	if err := os.MkdirAll(filepath.Dir(configPath), 0755); err != nil {
+	if err := os.MkdirAll(filepath.Dir(configPath), 0o755); err != nil {
 		return fmt.Errorf("failed to create config directory: %w", err)
 	}
 
-	// Сериализуем в YAML
 	data, err := yaml.Marshal(config)
 	if err != nil {
 		return fmt.Errorf("failed to marshal config: %w", err)
 	}
 
-	// Записываем в файл
-	if err := os.WriteFile(configPath, data, 0644); err != nil {
+	if err := os.WriteFile(configPath, data, 0o644); err != nil {
 		return fmt.Errorf("failed to write config file: %w", err)
 	}
 
@@ -124,96 +108,80 @@ func SaveConfig(config *Config, configPath string) error {
 
 // DefaultConfig возвращает конфигурацию по умолчанию
 func DefaultConfig() *Config {
-	homeDir, _ := os.UserHomeDir()
-	logDir := filepath.Join(homeDir, ".claude", "logs")
-
 	return &Config{
-		General: GeneralConfig{
-			LogLevel: "info",
-			LogFile:  filepath.Join(logDir, "claude-hooks.log"),
-		},
 		Validators: map[string]ValidatorConfig{
-			"emergency_defaults": {
-				Enabled:           true,
-				CaseSensitive:     false,
-				ExceptionPaths:    []string{"docs/", "README"},
-				ExceptionFiles:    []string{"*.md", "*.txt", "*.rst"},
-				SuggestionMessage: "Use explicit validation, required parameters, error throwing",
-			},
 			"runtime_exit": {
-				Enabled:         true,
-				GoFilesOnly:     true,
-				TestExceptions:  []string{"*_test.go", "tests/", "test/"},
-				ProductionPaths: []string{"backend/", "src/", "internal/"},
+				Enabled:     true,
+				GoFilesOnly: true,
+				Exceptions:  []string{"*_test.go", "/cmd/", "main.go"},
 			},
 			"secrets": {
-				Enabled:              true,
-				JWTPattern:           "eyJ[a-zA-Z0-9+/]+",
-				WalletPattern:        "0x[a-fA-F0-9]{40}",
-				TestConfigExceptions: []string{"test-config.ts", "test-config.js", "*test*.json"},
+				Enabled:    true,
+				Exceptions: []string{"*_test.go", "test-config.*"},
 			},
 		},
 		Tools: map[string]ToolConfig{
 			"bash": {
-				Enabled:         true,
-				BlockedPatterns: []string{"--headed", "rm -rf /", "rm -rf ~", ":(){ :|:& };:"},
+				Enabled: true,
 			},
 			"formatter": {
 				Enabled:  true,
 				GoFormat: true,
 				TSFormat: true,
-				Formatters: map[string]string{
-					"go":  "gofmt -w",
-					"ts":  "prettier --write",
-					"tsx": "prettier --write",
-					"js":  "prettier --write",
-					"jsx": "prettier --write",
-				},
 			},
 			"notifier": {
-				Enabled: true,
-				Sound:   true,
-				Desktop: true,
+				Enabled:         true,
+				Sound:           true,
+				Desktop:         true,
+				ActivateOnClick: true,
 			},
 		},
-		Logger: LoggerConfig{
-			Level:   "info",
-			Format:  "text",
-			Output:  "file",
-			LogFile: filepath.Join(logDir, "claude-hooks.log"),
-		},
+		Logger: DefaultLoggerConfig(),
 	}
 }
 
 // validateConfig проверяет корректность конфигурации
 func validateConfig(config *Config) error {
-	// Проверяем уровень логирования
-	validLogLevels := []string{"debug", "info", "warn", "warning", "error"}
-	if !contains(validLogLevels, config.General.LogLevel) {
-		return fmt.Errorf("invalid log level: %s", config.General.LogLevel)
+	validLevels := []string{"debug", "info", "warn", "warning", "error"}
+	if !containsFold(validLevels, config.Logger.Level) {
+		return fmt.Errorf("invalid logger level: %q (expected one of %s)",
+			config.Logger.Level, strings.Join(validLevels, ", "))
 	}
 
-	// Проверяем конфигурацию логгера
+	validFormats := []string{"text", "json"}
+	if !containsFold(validFormats, config.Logger.Format) {
+		return fmt.Errorf("invalid logger format: %q (expected one of %s)",
+			config.Logger.Format, strings.Join(validFormats, ", "))
+	}
+
 	validOutputs := []string{"stdout", "stderr", "file"}
-	if !contains(validOutputs, config.Logger.Output) {
-		return fmt.Errorf("invalid logger output: %s", config.Logger.Output)
+	if !containsFold(validOutputs, config.Logger.Output) {
+		return fmt.Errorf("invalid logger output: %q (expected one of %s)",
+			config.Logger.Output, strings.Join(validOutputs, ", "))
 	}
 
 	if config.Logger.Output == "file" && config.Logger.LogFile == "" {
 		return fmt.Errorf("logger.file is required when output is 'file'")
 	}
 
+	if config.Logger.MaxSizeMB < 0 {
+		return fmt.Errorf("logger.max_size_mb must not be negative, got %d", config.Logger.MaxSizeMB)
+	}
+
 	return nil
 }
 
-// getDefaultConfigPath возвращает путь к конфигурации по умолчанию
-func getDefaultConfigPath() string {
-	homeDir, _ := os.UserHomeDir()
+// DefaultConfigPath возвращает путь к конфигурации по умолчанию
+func DefaultConfigPath() string {
+	homeDir, err := os.UserHomeDir()
+	if err != nil {
+		return filepath.Join(".claude", "hooks", "config.yaml")
+	}
 	return filepath.Join(homeDir, ".claude", "hooks", "config.yaml")
 }
 
-// contains проверяет содержится ли элемент в слайсе
-func contains(slice []string, item string) bool {
+// containsFold проверяет содержится ли элемент в слайсе без учета регистра
+func containsFold(slice []string, item string) bool {
 	for _, s := range slice {
 		if strings.EqualFold(s, item) {
 			return true
@@ -224,18 +192,17 @@ func contains(slice []string, item string) bool {
 
 // expandPath раскрывает ~ в пути к домашней директории
 func expandPath(path string) string {
-	if strings.HasPrefix(path, "~/") {
-		homeDir, _ := os.UserHomeDir()
-		return filepath.Join(homeDir, path[2:])
+	if !strings.HasPrefix(path, "~/") {
+		return path
 	}
-	return path
+	homeDir, err := os.UserHomeDir()
+	if err != nil {
+		return path
+	}
+	return filepath.Join(homeDir, path[2:])
 }
 
-// expandConfigPaths применяет expandPath к всем путям в конфигурации
+// expandConfigPaths применяет expandPath ко всем путям в конфигурации
 func expandConfigPaths(config *Config) {
-	// Расширяем пути в общих настройках
-	config.General.LogFile = expandPath(config.General.LogFile)
-
-	// Расширяем пути в настройках логгера
 	config.Logger.LogFile = expandPath(config.Logger.LogFile)
 }

@@ -3,7 +3,6 @@ package core
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"time"
 )
 
@@ -21,10 +20,39 @@ type Level string
 
 const (
 	LevelCritical Level = "critical"
-	LevelError    Level = "error"
 	LevelWarning  Level = "warning"
 	LevelInfo     Level = "info"
 )
+
+// HookPhase определяет этап, на котором вызван инструмент
+type HookPhase string
+
+const (
+	PhasePre          HookPhase = "pre"
+	PhasePost         HookPhase = "post"
+	PhaseStop         HookPhase = "stop"
+	PhaseNotification HookPhase = "notification"
+)
+
+// Имена событий, под которыми инструменты объявляют поддержку сессионных хуков
+const (
+	EventStop         = "Stop"
+	EventNotification = "Notification"
+)
+
+// phaseContextKey приватный тип ключа контекста — исключает коллизии между пакетами
+type phaseContextKey struct{}
+
+// WithPhase помещает этап выполнения хука в контекст
+func WithPhase(ctx context.Context, phase HookPhase) context.Context {
+	return context.WithValue(ctx, phaseContextKey{}, phase)
+}
+
+// PhaseFromContext извлекает этап выполнения хука из контекста
+func PhaseFromContext(ctx context.Context) HookPhase {
+	phase, _ := ctx.Value(phaseContextKey{}).(HookPhase)
+	return phase
+}
 
 // ToolInput представляет входные данные от Claude Code
 type ToolInput struct {
@@ -37,6 +65,9 @@ type ToolInput struct {
 	Command        string          `json:"command,omitempty"`
 	CWD            string          `json:"cwd,omitempty"`
 	TranscriptPath string          `json:"transcript_path,omitempty"`
+	// Message заполняется Claude Code для события Notification:
+	// текст запроса разрешения или ожидания ответа
+	Message string `json:"message,omitempty"`
 }
 
 // FileAnalysis содержит анализируемую информацию о файле
@@ -60,60 +91,33 @@ type Violation struct {
 
 // HookResponse представляет ответ хука
 type HookResponse struct {
-	Action            HookAction    `json:"action"`
-	Message           string        `json:"message"`
-	Suggestions       []string      `json:"suggestions,omitempty"`
-	Level             Level         `json:"level"`
-	Violations        []Violation   `json:"violations,omitempty"`
-	Timestamp         time.Time     `json:"timestamp"`
-	ProcessTime       time.Duration `json:"process_time_ms"`
-	ModifiedToolInput *ToolInput    `json:"modified_tool_input,omitempty"` // Модифицированные параметры для Claude Code
+	Action      HookAction  `json:"action"`
+	Message     string      `json:"message"`
+	Suggestions []string    `json:"suggestions,omitempty"`
+	Level       Level       `json:"level"`
+	Violations  []Violation `json:"violations,omitempty"`
+	Timestamp   time.Time   `json:"timestamp"`
+	ProcessTime float64     `json:"process_time_ms"`
 }
 
-// HookProcessor основной интерфейс для обработки хуков
-type HookProcessor interface {
-	ProcessPreToolUse(ctx context.Context, input *ToolInput) (*HookResponse, error)
-	ProcessPostToolUse(ctx context.Context, input *ToolInput) (*HookResponse, error)
-	ProcessStop(ctx context.Context) (*HookResponse, error)
-}
-
-// Validator интерфейс для TIER-1 критических проверок
+// Validator интерфейс для проверок содержимого файлов
 type Validator interface {
 	Name() string
 	Validate(ctx context.Context, file *FileAnalysis) (*ValidationResult, error)
 	IsEnabled() bool
-	GetExceptions() []string
 }
 
 // ValidationResult результат валидации
 type ValidationResult struct {
-	IsValid           bool        `json:"is_valid"`
-	Violations        []Violation `json:"violations"`
-	Suggestions       []string    `json:"suggestions"`
-	ModifiedToolInput *ToolInput  `json:"modified_tool_input,omitempty"` // Модифицированные параметры инструмента
-}
-
-// Advisor интерфейс для TIER-2 стилевых советов
-type Advisor interface {
-	Name() string
-	Advise(ctx context.Context, file *FileAnalysis) (*AdviceResult, error)
-	IsEnabled() bool
-	GetSeverity() Level
-}
-
-// AdviceResult результат получения совета
-type AdviceResult struct {
-	Advices     []Violation `json:"advices"`
+	IsValid     bool        `json:"is_valid"`
+	Violations  []Violation `json:"violations"`
 	Suggestions []string    `json:"suggestions"`
 }
 
-// ToolValidator интерфейс для валидации специфических инструментов
+// ToolValidator интерфейс для обработки конкретных инструментов Claude Code
 type ToolValidator interface {
 	Name() string
 	ValidateTool(ctx context.Context, input *ToolInput) (*ValidationResult, error)
 	IsEnabled() bool
 	SupportedTools() []string
 }
-
-// ErrUnsupportedTool ошибка неподдерживаемого инструмента
-var ErrUnsupportedTool = errors.New("unsupported tool operation")

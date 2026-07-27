@@ -2,113 +2,68 @@ package core
 
 import (
 	"bytes"
+	"context"
 	"log/slog"
 	"sync"
 )
 
-// TestLogger - test-friendly logger implementation
+// TestLogger логгер для тестов, накапливающий вывод в буфер
 type TestLogger struct {
+	mu     *sync.Mutex
 	buffer *bytes.Buffer
 	logger *slog.Logger
-	mu     sync.Mutex
 }
 
-// NewTestLogger creates a new test logger that captures log output
-func NewTestLogger() Logger {
+// NewTestLogger создает логгер, захватывающий вывод в память
+func NewTestLogger() *TestLogger {
 	buffer := &bytes.Buffer{}
-
-	// Create handler that writes to buffer
-	handler := slog.NewTextHandler(buffer, &slog.HandlerOptions{
-		Level: slog.LevelDebug,
-	})
-
-	logger := slog.New(handler)
+	handler := slog.NewTextHandler(buffer, &slog.HandlerOptions{Level: slog.LevelDebug})
 
 	return &TestLogger{
+		mu:     &sync.Mutex{},
 		buffer: buffer,
-		logger: logger,
+		logger: slog.New(handler),
 	}
 }
 
-// Debug logs debug level message
+// Debug логирует сообщение уровня debug
 func (t *TestLogger) Debug(msg string, args ...any) {
-	t.mu.Lock()
-	defer t.mu.Unlock()
-	attrs := convertArgs(args...)
-	t.logger.LogAttrs(nil, slog.LevelDebug, msg, attrs...)
+	t.log(slog.LevelDebug, msg, args...)
 }
 
-// Info logs info level message
+// Info логирует сообщение уровня info
 func (t *TestLogger) Info(msg string, args ...any) {
-	t.mu.Lock()
-	defer t.mu.Unlock()
-	attrs := convertArgs(args...)
-	t.logger.LogAttrs(nil, slog.LevelInfo, msg, attrs...)
+	t.log(slog.LevelInfo, msg, args...)
 }
 
-// Warn logs warning level message
+// Warn логирует сообщение уровня warning
 func (t *TestLogger) Warn(msg string, args ...any) {
-	t.mu.Lock()
-	defer t.mu.Unlock()
-	attrs := convertArgs(args...)
-	t.logger.LogAttrs(nil, slog.LevelWarn, msg, attrs...)
+	t.log(slog.LevelWarn, msg, args...)
 }
 
-// Error logs error level message
+// Error логирует сообщение уровня error
 func (t *TestLogger) Error(msg string, args ...any) {
-	t.mu.Lock()
-	defer t.mu.Unlock()
-	attrs := convertArgs(args...)
-	t.logger.LogAttrs(nil, slog.LevelError, msg, attrs...)
+	t.log(slog.LevelError, msg, args...)
 }
 
-// With creates a new logger with additional context
+// With создает новый logger с дополнительными атрибутами, разделяющий буфер
 func (t *TestLogger) With(args ...any) Logger {
-	t.mu.Lock()
-	defer t.mu.Unlock()
-
-	// Convert to slog.Any format for With method
-	slogArgs := make([]any, 0, len(args))
-	for i := 0; i < len(args); i += 2 {
-		if i+1 < len(args) {
-			slogArgs = append(slogArgs, args[i], args[i+1])
-		}
-	}
-
-	contextLogger := t.logger.With(slogArgs...)
-
 	return &TestLogger{
+		mu:     t.mu,
 		buffer: t.buffer,
-		logger: contextLogger,
+		logger: t.logger.With(args...),
 	}
 }
 
-// GetOutput returns all logged output as string
-func (t *TestLogger) GetOutput() string {
+// Output возвращает накопленный вывод
+func (t *TestLogger) Output() string {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	return t.buffer.String()
 }
 
-// Clear clears the log buffer
-func (t *TestLogger) Clear() {
+func (t *TestLogger) log(level slog.Level, msg string, args ...any) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
-	t.buffer.Reset()
-}
-
-// Helper function to convert interface{} args to slog.Attr
-func convertArgs(args ...any) []slog.Attr {
-	var attrs []slog.Attr
-
-	for i := 0; i < len(args); i += 2 {
-		if i+1 < len(args) {
-			key, ok := args[i].(string)
-			if ok {
-				attrs = append(attrs, slog.Any(key, args[i+1]))
-			}
-		}
-	}
-
-	return attrs
+	t.logger.Log(context.Background(), level, msg, args...)
 }

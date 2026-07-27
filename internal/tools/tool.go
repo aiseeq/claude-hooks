@@ -1,14 +1,10 @@
 package tools
 
 import (
-	"regexp"
-	"strings"
-
 	"github.com/aiseeq/claude-hooks/internal/core"
-	"github.com/aiseeq/claude-hooks/internal/shared"
 )
 
-// BaseTool базовая реализация tool validator
+// BaseTool общая часть всех инструментальных валидаторов
 type BaseTool struct {
 	name           string
 	enabled        bool
@@ -16,7 +12,7 @@ type BaseTool struct {
 	logger         core.Logger
 }
 
-// NewBaseTool создает новый базовый tool
+// NewBaseTool создает базовый инструмент
 func NewBaseTool(name string, enabled bool, supportedTools []string, logger core.Logger) *BaseTool {
 	return &BaseTool{
 		name:           name,
@@ -26,69 +22,22 @@ func NewBaseTool(name string, enabled bool, supportedTools []string, logger core
 	}
 }
 
-// Name возвращает имя tool
+// Name возвращает имя инструмента
 func (t *BaseTool) Name() string {
 	return t.name
 }
 
-// IsEnabled проверяет включен ли tool
+// IsEnabled проверяет включен ли инструмент
 func (t *BaseTool) IsEnabled() bool {
 	return t.enabled
 }
 
-// SupportedTools возвращает список поддерживаемых операций
+// SupportedTools возвращает список поддерживаемых операций Claude Code
 func (t *BaseTool) SupportedTools() []string {
 	return t.supportedTools
 }
 
-// Logger возвращает логгер tool'а
+// Logger возвращает логгер инструмента
 func (t *BaseTool) Logger() core.Logger {
 	return t.logger
-}
-
-// Дублированные функции теперь используются из shared пакета
-// Алиасы для обратной совместимости
-type PatternMatch = shared.PatternMatch
-
-var CreateViolation = shared.CreateViolation
-
-// FindPatternMatches ищет совпадения с паттернами в тексте
-// CANONICAL VERSION - использует shared.FindPatternMatches
-func (t *BaseTool) FindPatternMatches(content string, patterns []*regexp.Regexp) []shared.PatternMatch {
-	return shared.FindPatternMatches(content, patterns)
-}
-
-// isTestOperation проверяет является ли операция тестовой
-func isTestOperation(toolName string) bool {
-	testOperations := []string{"test", "Test", "TEST"}
-	for _, testOp := range testOperations {
-		if strings.Contains(toolName, testOp) {
-			return true
-		}
-	}
-	return false
-}
-
-// isSupportedFile алиас для shared.IsSupportedFileType для обратной совместимости
-var isSupportedFile = shared.IsSupportedFileType
-
-// extractCommand извлекает команду из Bash tool input
-func extractCommand(input *core.ToolInput) string {
-	if input.ToolName != "Bash" {
-		return ""
-	}
-	return input.Command
-}
-
-// extractFilePath извлекает путь файла из tool input
-func extractFilePath(input *core.ToolInput) string {
-	return input.FilePath
-}
-
-// extractContent извлекает содержимое файла из tool input
-func extractContent(input *core.ToolInput) string {
-	if input.Content != "" {
-		return input.Content
-	}
-	return input.NewString
 }
