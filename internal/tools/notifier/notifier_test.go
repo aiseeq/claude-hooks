@@ -2,137 +2,257 @@ package notifier
 
 import (
 	"context"
+	"os"
+	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/aiseeq/claude-hooks/internal/core"
 )
 
-func TestNotifierTool_OnlyHandlesStop(t *testing.T) {
-	logger := core.NewTestLogger()
-	config := core.ToolConfig{
-		Enabled: true,
-	}
+func newNotifier(t *testing.T, config core.ToolConfig) *NotifierTool {
+	t.Helper()
 
-	tool, err := NewNotifierTool(config, logger)
+	tool, err := NewNotifierTool(config, core.NewTestLogger())
 	if err != nil {
 		t.Fatalf("failed to create tool: %v", err)
 	}
+	return tool
+}
 
-	tests := []struct {
-		name     string
-		toolName string
-	}{
-		{"ignores Write", "Write"},
-		{"ignores Edit", "Edit"},
-		{"ignores Bash", "Bash"},
-	}
+func TestNotifierTool_IgnoresToolOperations(t *testing.T) {
+	tool := newNotifier(t, core.ToolConfig{Enabled: true})
 
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			input := &core.ToolInput{
-				ToolName: tt.toolName,
-			}
-
-			result, err := tool.ValidateTool(context.Background(), input)
+	for _, toolName := range []string{"Write", "Edit", "Bash"} {
+		t.Run(toolName, func(t *testing.T) {
+			result, err := tool.ValidateTool(context.Background(), &core.ToolInput{ToolName: toolName})
 			if err != nil {
 				t.Fatalf("validation failed: %v", err)
 			}
-
-			if !result.IsValid {
-				t.Errorf("notifier should not block non-Stop tools")
-			}
-			if len(result.Violations) > 0 {
-				t.Errorf("notifier should not process non-Stop tools")
+			if !result.IsValid || len(result.Suggestions) > 0 {
+				t.Error("notifier обрабатывает только события сессии")
 			}
 		})
+	}
+}
+
+func TestNotifierTool_HandlesSessionEvents(t *testing.T) {
+	tool := newNotifier(t, core.ToolConfig{Enabled: true, Sound: false, Desktop: false})
+
+	for _, event := range []string{core.EventStop, core.EventNotification} {
+		t.Run(event, func(t *testing.T) {
+			result, err := tool.ValidateTool(context.Background(), &core.ToolInput{
+				ToolName: event,
+				CWD:      "/home/user/work/my-project",
+				Message:  "Claude needs your permission to use Bash",
+			})
+			if err != nil {
+				t.Fatalf("validation failed: %v", err)
+			}
+			if len(result.Suggestions) == 0 {
+				t.Fatalf("событие %s должно приводить к уведомлению", event)
+			}
+			if !strings.Contains(result.Suggestions[0], "my-project") {
+				t.Errorf("имя проекта не определено: %q", result.Suggestions[0])
+			}
+		})
+	}
+}
+
+func TestNotifierTool_BuildAlert(t *testing.T) {
+	tool := newNotifier(t, core.ToolConfig{
+		Enabled:         true,
+		Sound:           true,
+		Desktop:         true,
+		ActivateOnClick: true,
+	})
+
+	t.Run("вопрос показывает текст запроса", func(t *testing.T) {
+		alert, title, ok := tool.buildAlert(&core.ToolInput{
+			ToolName: core.EventNotification,
+			Message:  "Claude needs your permission to use Bash",
+		}, "my-project")
+
+		if !ok {
+			t.Fatal("событие должно обрабатываться")
+		}
+		if alert.Message != "Claude needs your permission to use Bash" {
+			t.Errorf("текст запроса не подставлен: %q", alert.Message)
+		}
+		if !strings.Contains(title, "ждёт ответа") {
+			t.Errorf("заголовок окна: %q", title)
+		}
+		// Без списка процессов уведомление останется без действия по клику
+		if len(alert.ActivatePIDs) == 0 {
+			t.Error("процессы для активации окна не определены")
+		}
+	})
+
+	t.Run("завершение работы без текста запроса", func(t *testing.T) {
+		alert, title, ok := tool.buildAlert(&core.ToolInput{ToolName: core.EventStop}, "my-project")
+
+		if !ok {
+			t.Fatal("событие должно обрабатываться")
+		}
+		if !strings.Contains(alert.Message, "my-project") {
+			t.Errorf("сообщение: %q", alert.Message)
+		}
+		if !strings.Contains(title, "готово") {
+			t.Errorf("заголовок окна: %q", title)
+		}
+	})
+
+	t.Run("посторонние операции игнорируются", func(t *testing.T) {
+		if _, _, ok := tool.buildAlert(&core.ToolInput{ToolName: "Write"}, "my-project"); ok {
+			t.Error("Write не является событием сессии")
+		}
+	})
+}
+
+func TestNotifierTool_ActivationDisabled(t *testing.T) {
+	tool := newNotifier(t, core.ToolConfig{Enabled: true, Desktop: true, ActivateOnClick: false})
+
+	alert, _, ok := tool.buildAlert(&core.ToolInput{ToolName: core.EventStop}, "my-project")
+	if !ok {
+		t.Fatal("событие должно обрабатываться")
+	}
+	if len(alert.ActivatePIDs) != 0 {
+		t.Error("при выключенной активации список процессов должен быть пуст")
+	}
+}
+
+// Оба события заявлены как поддерживаемые: иначе движок не вызовет инструмент
+func TestNotifierTool_SupportedTools(t *testing.T) {
+	tool := newNotifier(t, core.ToolConfig{Enabled: true})
+
+	supported := strings.Join(tool.SupportedTools(), ",")
+	for _, event := range []string{core.EventStop, core.EventNotification} {
+		if !strings.Contains(supported, event) {
+			t.Errorf("событие %s не заявлено: %s", event, supported)
+		}
 	}
 }
 
 func TestNotifierTool_Disabled(t *testing.T) {
-	logger := core.NewTestLogger()
-	config := core.ToolConfig{
-		Enabled: false,
-	}
+	tool := newNotifier(t, core.ToolConfig{Enabled: false})
 
-	tool, err := NewNotifierTool(config, logger)
-	if err != nil {
-		t.Fatalf("failed to create tool: %v", err)
-	}
-
-	input := &core.ToolInput{
-		ToolName: "Stop",
-	}
-
-	result, err := tool.ValidateTool(context.Background(), input)
+	result, err := tool.ValidateTool(context.Background(), &core.ToolInput{ToolName: "Stop"})
 	if err != nil {
 		t.Fatalf("validation failed: %v", err)
 	}
-
-	if !result.IsValid {
-		t.Error("disabled tool should not block")
+	if len(result.Suggestions) > 0 {
+		t.Error("выключенный инструмент не должен отправлять уведомления")
 	}
 }
 
-func TestNotifierTool_ExtractProjectName(t *testing.T) {
-	logger := core.NewTestLogger()
-	config := core.ToolConfig{
-		Enabled: true,
-		WorkDir: "/home/testuser/work",
-	}
+func TestNotifierTool_ProjectName(t *testing.T) {
+	tool := newNotifier(t, core.ToolConfig{Enabled: true})
+	home := t.TempDir()
+	t.Setenv("HOME", home)
 
-	tool, err := NewNotifierTool(config, logger)
-	if err != nil {
-		t.Fatalf("failed to create tool: %v", err)
+	// Проекты вне ~/work и вложенные каталоги: имя определяется по факту, а не по шаблону пути
+	for _, dir := range []string{"work/claude-hooks", "git/life", "work/saga/frontend/admin-app"} {
+		if err := os.MkdirAll(filepath.Join(home, dir), 0o755); err != nil {
+			t.Fatalf("не удалось создать каталог: %v", err)
+		}
 	}
+	encodedHome := strings.ReplaceAll(home, "/", "-")
 
 	tests := []struct {
 		name     string
-		path     string
+		input    core.ToolInput
 		expected string
 	}{
 		{
-			name:     "extracts from direct path",
-			path:     "/home/testuser/work/myproject/src/main.go",
-			expected: "myproject",
+			name:     "рабочая директория сессии приоритетна",
+			input:    core.ToolInput{CWD: filepath.Join(home, "git/life")},
+			expected: "life",
 		},
 		{
-			name:     "extracts project only",
-			path:     "/home/testuser/work/saga",
-			expected: "saga",
+			name:     "домашний каталог вместо имени пользователя",
+			input:    core.ToolInput{CWD: home},
+			expected: "~",
 		},
 		{
-			name:     "returns unknown for unmatched path",
-			path:     "/var/log/something",
-			expected: "unknown",
+			name:     "корень файловой системы",
+			input:    core.ToolInput{CWD: "/"},
+			expected: "/",
+		},
+		{
+			name:     "дефис в имени проекта не является разделителем",
+			input:    core.ToolInput{TranscriptPath: "/p/" + encodedHome + "-work-claude-hooks/s.jsonl"},
+			expected: "claude-hooks",
+		},
+		{
+			name:     "проект вне рабочего каталога",
+			input:    core.ToolInput{TranscriptPath: "/p/" + encodedHome + "-git-life/s.jsonl"},
+			expected: "life",
+		},
+		{
+			// Родительский каталог различает ~/work/saga/frontend и ~/work/glint/frontend
+			name:     "вложенный проект показывается вместе с родителем",
+			input:    core.ToolInput{TranscriptPath: "/p/" + encodedHome + "-work-saga-frontend-admin-app/s.jsonl"},
+			expected: "frontend/admin-app",
+		},
+		{
+			name:     "проект первого уровня остаётся без родителя",
+			input:    core.ToolInput{CWD: filepath.Join(home, "work/claude-hooks")},
+			expected: "claude-hooks",
+		},
+		{
+			name:     "сессия из домашнего каталога",
+			input:    core.ToolInput{TranscriptPath: "/p/" + encodedHome + "/s.jsonl"},
+			expected: "~",
+		},
+		{
+			name:     "удалённый каталог: дефис считается разделителем",
+			input:    core.ToolInput{TranscriptPath: "/p/-var-lib-service/s.jsonl"},
+			expected: "service",
 		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			result := tool.extractProjectFromPath(tt.path)
-			if result != tt.expected {
-				t.Errorf("expected %s, got %s", tt.expected, result)
+			if got := tool.ProjectName(&tt.input); got != tt.expected {
+				t.Errorf("ожидалось %q, получено %q", tt.expected, got)
 			}
 		})
 	}
 }
 
-func TestPathToEncoded(t *testing.T) {
-	tests := []struct {
-		path     string
-		expected string
-	}{
-		{"/home/user/work", "home-user-work"},
-		{"/var/log", "var-log"},
-		{"relative/path", "relative-path"},
+func TestDecodeProjectDir(t *testing.T) {
+	root := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(root, "my-app", "sub"), 0o755); err != nil {
+		t.Fatalf("не удалось создать каталог: %v", err)
+	}
+	encodedRoot := strings.ReplaceAll(root, "/", "-")
+
+	tests := map[string]string{
+		encodedRoot + "-my-app":     filepath.Join(root, "my-app"),
+		encodedRoot + "-my-app-sub": filepath.Join(root, "my-app", "sub"),
+		"":                          "",
+		"-":                         "",
 	}
 
-	for _, tt := range tests {
-		t.Run(tt.path, func(t *testing.T) {
-			result := pathToEncoded(tt.path)
-			if result != tt.expected {
-				t.Errorf("expected %s, got %s", tt.expected, result)
+	for encoded, expected := range tests {
+		t.Run(encoded, func(t *testing.T) {
+			if got := decodeProjectDir(encoded); got != expected {
+				t.Errorf("ожидалось %q, получено %q", expected, got)
 			}
 		})
+	}
+}
+
+// Путь может содержать каталог, чьё имя начинается с дефиса: /tmp/x/-home-user
+func TestDecodeProjectDir_LeadingDashInName(t *testing.T) {
+	root := t.TempDir()
+	nested := filepath.Join(root, "-dashed", "app")
+	if err := os.MkdirAll(nested, 0o755); err != nil {
+		t.Fatalf("не удалось создать каталог: %v", err)
+	}
+
+	encoded := strings.ReplaceAll(root, "/", "-") + "--dashed-app"
+	if got := decodeProjectDir(encoded); got != nested {
+		t.Errorf("ожидалось %q, получено %q", nested, got)
 	}
 }

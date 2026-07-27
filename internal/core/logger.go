@@ -6,12 +6,49 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
-	"time"
 )
 
+// defaultMaxLogSizeMB размер лога, после которого выполняется ротация.
+// Без него файл растет неограниченно: хук вызывается на каждую операцию Claude Code
+const defaultMaxLogSizeMB = 16
+
+// LoggerConfig конфигурация логгера
+type LoggerConfig struct {
+	Level     string `yaml:"level"`       // debug, info, warn, error
+	Format    string `yaml:"format"`      // text, json
+	Output    string `yaml:"output"`      // stdout, stderr, file
+	LogFile   string `yaml:"file"`        // путь к файлу лога (если output = file)
+	MaxSizeMB int    `yaml:"max_size_mb"` // порог ротации, 0 — отключить ротацию
+}
+
+// DefaultLoggerConfig возвращает конфигурацию логгера по умолчанию
+func DefaultLoggerConfig() LoggerConfig {
+	return LoggerConfig{
+		Level:     "info",
+		Format:    "text",
+		Output:    "stderr",
+		MaxSizeMB: defaultMaxLogSizeMB,
+	}
+}
+
+// applyLoggerDefaults подставляет значения по умолчанию для незаполненных полей
+func applyLoggerDefaults(config *LoggerConfig) {
+	defaults := DefaultLoggerConfig()
+	if config.Level == "" {
+		config.Level = defaults.Level
+	}
+	if config.Format == "" {
+		config.Format = defaults.Format
+	}
+	if config.Output == "" {
+		config.Output = defaults.Output
+	}
+	if config.MaxSizeMB == 0 {
+		config.MaxSizeMB = defaults.MaxSizeMB
+	}
+}
+
 // Logger интерфейс для структурированного логирования
-// CLAUDE.MD NOTE: Supervisor tools используют изолированную slog архитектуру,
-// отдельную от основного проекта для независимости инструментов
 type Logger interface {
 	Debug(msg string, args ...any)
 	Info(msg string, args ...any)
@@ -25,86 +62,87 @@ type slogLogger struct {
 	logger *slog.Logger
 }
 
-// NewLogger создает новый logger с настройками
-func NewLogger(config *LoggerConfig) (Logger, error) {
-	if config == nil {
-		config = &LoggerConfig{
-			Level:   "info",
-			Format:  "text",
-			Output:  "stderr",
-			LogFile: "",
-		}
+// NewLogger создает logger по конфигурации
+func NewLogger(config LoggerConfig) (Logger, error) {
+	applyLoggerDefaults(&config)
+
+	writer, err := openLogWriter(config)
+	if err != nil {
+		return nil, err
 	}
 
-	// Определяем уровень логирования
-	var level slog.Level
-	switch config.Level {
-	case "debug":
-		level = slog.LevelDebug
-	case "info":
-		level = slog.LevelInfo
-	case "warn", "warning":
-		level = slog.LevelWarn
-	case "error":
-		level = slog.LevelError
-	default:
-		level = slog.LevelInfo
-	}
-
-	// Определяем выходной поток
-	var writer io.Writer
-	switch config.Output {
-	case "stdout":
-		writer = os.Stdout
-	case "stderr":
-		writer = os.Stderr
-	case "file":
-		if config.LogFile == "" {
-			return nil, fmt.Errorf("log file path is required when output is 'file'")
-		}
-
-		// Создаем директорию для лог файла если не существует
-		if err := os.MkdirAll(filepath.Dir(config.LogFile), 0755); err != nil {
-			return nil, fmt.Errorf("failed to create log directory: %w", err)
-		}
-
-		file, err := os.OpenFile(config.LogFile, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644)
-		if err != nil {
-			return nil, fmt.Errorf("failed to open log file: %w", err)
-		}
-		writer = file
-	default:
-		writer = os.Stderr
-	}
-
-	// Создаем handler в зависимости от формата
-	var handler slog.Handler
 	opts := &slog.HandlerOptions{
-		Level: level,
+		Level: parseLogLevel(config.Level),
 		ReplaceAttr: func(groups []string, a slog.Attr) slog.Attr {
-			// Форматируием время в читаемый вид
 			if a.Key == slog.TimeKey {
-				return slog.Attr{
-					Key:   a.Key,
-					Value: slog.StringValue(a.Value.Time().Format("2006-01-02 15:04:05")),
-				}
+				a.Value = slog.StringValue(a.Value.Time().Format("2006-01-02 15:04:05"))
 			}
 			return a
 		},
 	}
 
-	switch config.Format {
-	case "json":
+	var handler slog.Handler
+	if config.Format == "json" {
 		handler = slog.NewJSONHandler(writer, opts)
-	case "text":
-		handler = slog.NewTextHandler(writer, opts)
-	default:
+	} else {
 		handler = slog.NewTextHandler(writer, opts)
 	}
 
-	logger := slog.New(handler)
+	return &slogLogger{logger: slog.New(handler)}, nil
+}
 
-	return &slogLogger{logger: logger}, nil
+// parseLogLevel преобразует текстовый уровень в slog.Level
+func parseLogLevel(level string) slog.Level {
+	switch level {
+	case "debug":
+		return slog.LevelDebug
+	case "warn", "warning":
+		return slog.LevelWarn
+	case "error":
+		return slog.LevelError
+	default:
+		return slog.LevelInfo
+	}
+}
+
+// openLogWriter открывает поток вывода логов
+func openLogWriter(config LoggerConfig) (io.Writer, error) {
+	switch config.Output {
+	case "stdout":
+		// stdout зарезервирован под протокол обмена с Claude Code
+		return os.Stderr, nil
+	case "file":
+		if config.LogFile == "" {
+			return nil, fmt.Errorf("log file path is required when output is 'file'")
+		}
+		if err := os.MkdirAll(filepath.Dir(config.LogFile), 0o755); err != nil {
+			return nil, fmt.Errorf("failed to create log directory: %w", err)
+		}
+		rotateLogIfNeeded(config.LogFile, config.MaxSizeMB)
+
+		file, err := os.OpenFile(config.LogFile, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644)
+		if err != nil {
+			return nil, fmt.Errorf("failed to open log file: %w", err)
+		}
+		return file, nil
+	default:
+		return os.Stderr, nil
+	}
+}
+
+// rotateLogIfNeeded переименовывает лог в *.1 при превышении порога размера.
+// Ошибки ротации игнорируются намеренно: логирование не должно ломать работу хука
+func rotateLogIfNeeded(logFile string, maxSizeMB int) {
+	if maxSizeMB <= 0 {
+		return
+	}
+
+	info, err := os.Stat(logFile)
+	if err != nil || info.Size() < int64(maxSizeMB)*1024*1024 {
+		return
+	}
+
+	_ = os.Rename(logFile, logFile+".1")
 }
 
 // Debug логирует сообщение уровня debug
@@ -130,48 +168,4 @@ func (l *slogLogger) Error(msg string, args ...any) {
 // With создает новый logger с дополнительными атрибутами
 func (l *slogLogger) With(args ...any) Logger {
 	return &slogLogger{logger: l.logger.With(args...)}
-}
-
-// LoggerConfig конфигурация для логгера
-type LoggerConfig struct {
-	Level   string `yaml:"level"`  // debug, info, warn, error
-	Format  string `yaml:"format"` // text, json
-	Output  string `yaml:"output"` // stdout, stderr, file
-	LogFile string `yaml:"file"`   // путь к файлу лога (если output = file)
-}
-
-// DefaultLoggerConfig возвращает конфигурацию по умолчанию
-func DefaultLoggerConfig() *LoggerConfig {
-	return &LoggerConfig{
-		Level:   "info",
-		Format:  "text",
-		Output:  "stderr",
-		LogFile: "",
-	}
-}
-
-// ClaudeHooksLoggerConfig возвращает конфигурацию для Claude Hooks
-func ClaudeHooksLoggerConfig(logDir string) *LoggerConfig {
-	return &LoggerConfig{
-		Level:   "info",
-		Format:  "text",
-		Output:  "file",
-		LogFile: filepath.Join(logDir, "claude-hooks.log"),
-	}
-}
-
-// LogTiming логирует время выполнения операции
-func LogTiming(logger Logger, operation string, start time.Time) {
-	duration := time.Since(start)
-	logger.Debug("operation completed",
-		"operation", operation,
-		"duration_ms", duration.Milliseconds(),
-	)
-}
-
-// LogError логирует ошибку с контекстом
-func LogError(logger Logger, err error, operation string, context ...any) {
-	args := []any{"error", err, "operation", operation}
-	args = append(args, context...)
-	logger.Error("operation failed", args...)
 }

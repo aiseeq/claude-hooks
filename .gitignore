@@ -11,6 +11,7 @@ bin/
 # Go
 go.work
 go.work.sum
+coverage.out
 
 # OS
 .DS_Store
