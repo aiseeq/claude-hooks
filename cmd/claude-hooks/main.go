@@ -12,6 +12,7 @@ import (
 	"github.com/aiseeq/claude-hooks/internal/core"
 	"github.com/aiseeq/claude-hooks/internal/desktop"
 	"github.com/aiseeq/claude-hooks/internal/processor"
+	"github.com/aiseeq/claude-hooks/internal/statusline"
 	"github.com/aiseeq/claude-hooks/internal/tools/notifier"
 )
 
@@ -62,6 +63,7 @@ func execute() int {
 		newHookCmd("stop", "Обработать Stop hook", &exitCode),
 		newHookCmd("notification", "Обработать Notification hook", &exitCode),
 		newNotifyCmd(),
+		newStatusLineCmd(),
 		newConfigCmd(),
 		newVersionCmd(),
 		newDeliverAlertCmd(),
@@ -115,6 +117,12 @@ func runHook(ctx context.Context, hookType string) (int, error) {
 		return exitError, err
 	}
 
+	// Строка статуса рисуется отдельным процессом и о ходе сессии не знает —
+	// состояние для неё оставляют хуки
+	if state, ok := hookStates[hookType]; ok {
+		core.SaveSessionState(input.SessionID, state)
+	}
+
 	var response *core.HookResponse
 	switch hookType {
 	case "pre-tool-use":
@@ -141,6 +149,14 @@ func runHook(ctx context.Context, hookType string) (int, error) {
 	}
 	// Warn и Block одинаково возвращают 2: только этот код доносит сообщение до модели
 	return exitBlocked, nil
+}
+
+// hookStates сопоставляет хук состоянию сессии, которое он подтверждает
+var hookStates = map[string]core.SessionState{
+	"pre-tool-use":  core.StateWorking,
+	"post-tool-use": core.StateWorking,
+	"stop":          core.StateDone,
+	"notification":  core.StateWaiting,
 }
 
 // sessionEvents события сессии, приходящие без tool_input:
@@ -388,6 +404,27 @@ func newDeliverAlertCmd() *cobra.Command {
 	flags.StringVar(&actionLabel, "action-label", "", "подпись действия уведомления")
 
 	return cmd
+}
+
+// newStatusLineCmd создает команду отрисовки строки статуса Claude Code
+func newStatusLineCmd() *cobra.Command {
+	return &cobra.Command{
+		Use:   "statusline",
+		Short: "Отрисовать строку статуса Claude Code",
+		Long: `Читает JSON сессии со stdin и печатает две строки статуса:
+плашку с именем проекта и подробности о ветке, модели и контексте.
+
+Подключается в ~/.claude/settings.json:
+  "statusLine": {"type": "command", "command": "~/.claude/hooks/claude-hooks statusline"}`,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			line, err := statusline.Render(cmd.Context(), os.Stdin)
+			if err != nil {
+				return err
+			}
+			fmt.Println(line)
+			return nil
+		},
+	}
 }
 
 // newVersionCmd создает команду вывода версии
