@@ -164,11 +164,14 @@ func runHook(ctx context.Context, hookType string) (int, error) {
 // hookUserPromptSubmit хук отправки запроса пользователем
 const hookUserPromptSubmit = "user-prompt-submit"
 
-// hookStates сопоставляет хук состоянию сессии, которое он подтверждает
+// hookStates сопоставляет хук состоянию сессии, которое он подтверждает.
+//
+// Вызовы инструментов состояние не меняют, хотя и означают работу: их делают
+// и субагенты, в том числе фоновые. Такой вызов посреди ожидания выглядел бы
+// возобновлением работы, и следующее напоминание Claude Code снова зазвонило
+// бы. Границы хода задают только запрос человека и остановка
 var hookStates = map[string]core.SessionState{
 	hookUserPromptSubmit: core.StateWorking,
-	"pre-tool-use":       core.StateWorking,
-	"post-tool-use":      core.StateWorking,
 	"stop":               core.StateDone,
 	"notification":       core.StateWaiting,
 }
