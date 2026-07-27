@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"io"
 	"os"
-	"path/filepath"
 	"strings"
 
 	"github.com/aiseeq/claude-hooks/internal/core"
@@ -93,10 +92,10 @@ func build(ctx context.Context, input Input) (string, string) {
 	state := core.LoadSessionState(input.SessionID)
 	git := ReadGitStatus(ctx, dir)
 
+	// Путь не показывается: плашка уже называет проект, а полный путь
+	// повторяет её и занимает место
 	var output strings.Builder
 	output.WriteString(projectBadge(dir, state, input.ContextWindow.UsedPercentage))
-	output.WriteString(" ")
-	output.WriteString(dim + shortenPath(dir) + reset)
 
 	if worktree := input.Workspace.GitWorktree; worktree != "" {
 		output.WriteString(dim + " ⑂" + worktree + reset)
@@ -117,7 +116,7 @@ func terminalTitle(dir string, git GitStatus, state core.SessionState, contextUs
 	case contextUsed >= contextCriticalPercent:
 		marker = "🔴"
 	case state == core.StateWaiting:
-		marker = "❓"
+		marker = "🟡"
 	case state == core.StateDone:
 		marker = "✅"
 	}
@@ -235,20 +234,4 @@ func workingDir(input Input) string {
 		return wd
 	}
 	return "."
-}
-
-// shortenPath заменяет домашний каталог тильдой
-func shortenPath(path string) string {
-	home, err := os.UserHomeDir()
-	if err != nil {
-		return path
-	}
-
-	if relative, err := filepath.Rel(home, path); err == nil && !strings.HasPrefix(relative, "..") {
-		if relative == "." {
-			return "~"
-		}
-		return filepath.Join("~", relative)
-	}
-	return path
 }

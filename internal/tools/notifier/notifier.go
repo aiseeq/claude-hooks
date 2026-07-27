@@ -104,7 +104,7 @@ func (t *NotifierTool) buildAlert(input *core.ToolInput, projectName string) (de
 		alert.Timeout = stopTimeout
 
 	case core.EventNotification:
-		terminalTitle = fmt.Sprintf("❓ %s · ждёт ответа", strings.ToUpper(projectName))
+		terminalTitle = fmt.Sprintf("🟡 %s · ждёт ответа", strings.ToUpper(projectName))
 		alert.Title = fmt.Sprintf("Claude Code ждёт ответа (%s)", projectName)
 		// Claude Code сообщает, чего именно ждёт: разрешения на инструмент или ввода
 		alert.Message = input.Message
