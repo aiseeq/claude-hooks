@@ -1,6 +1,7 @@
 package core
 
 import (
+	"context"
 	"os"
 	"path/filepath"
 	"strings"
@@ -21,6 +22,26 @@ const (
 // stateTTL определяет, как долго запись считается актуальной.
 // Сессии завершаются без уведомления, поэтому старые файлы просто устаревают
 const stateTTL = 24 * time.Hour
+
+// previousStateKey приватный тип ключа контекста — исключает коллизии между пакетами
+type previousStateKey struct{}
+
+// WithPreviousState помещает в контекст состояние сессии до текущего события.
+// По нему видно переход, а не только новое состояние: повторные напоминания
+// Claude Code приходят тем же событием, что и первое
+func WithPreviousState(ctx context.Context, state SessionState) context.Context {
+	return context.WithValue(ctx, previousStateKey{}, state)
+}
+
+// PreviousStateFromContext извлекает предыдущее состояние сессии.
+// Если его не клали, считается, что работа шла
+func PreviousStateFromContext(ctx context.Context) SessionState {
+	state, ok := ctx.Value(previousStateKey{}).(SessionState)
+	if !ok {
+		return StateWorking
+	}
+	return state
+}
 
 // SaveSessionState запоминает состояние сессии.
 // Ошибки не возвращаются: строка статуса — не повод ломать работу хука

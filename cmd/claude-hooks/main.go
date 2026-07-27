@@ -62,6 +62,7 @@ func execute() int {
 		newHookCmd("post-tool-use", "Обработать PostToolUse hook", &exitCode),
 		newHookCmd("stop", "Обработать Stop hook", &exitCode),
 		newHookCmd("notification", "Обработать Notification hook", &exitCode),
+		newHookCmd(hookUserPromptSubmit, "Обработать UserPromptSubmit hook", &exitCode),
 		newNotifyCmd(),
 		newStatusLineCmd(),
 		newConfigCmd(),
@@ -97,6 +98,26 @@ func runHook(ctx context.Context, hookType string) (int, error) {
 	ctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 
+	input, err := readInput(os.Stdin, hookType)
+	if err != nil {
+		return exitError, err
+	}
+
+	// Строка статуса рисуется отдельным процессом и о ходе сессии не знает —
+	// состояние для неё оставляют хуки. Предыдущее состояние идёт в контекст:
+	// по нему виден переход, а не только новое состояние
+	ctx = core.WithPreviousState(ctx, core.LoadSessionState(input.SessionID))
+	if state, ok := hookStates[hookType]; ok {
+		core.SaveSessionState(input.SessionID, state)
+	}
+
+	// Отправка запроса ничего не проверяет: она лишь отмечает, что работа
+	// возобновилась, и без неё ответ без единого вызова инструмента остался бы
+	// незамеченным
+	if hookType == hookUserPromptSubmit {
+		return exitAllowed, nil
+	}
+
 	config, err := core.LoadConfig(configPath)
 	if err != nil {
 		return exitError, fmt.Errorf("failed to load config: %w", err)
@@ -110,17 +131,6 @@ func runHook(ctx context.Context, hookType string) (int, error) {
 	engine, err := processor.New(config, logger)
 	if err != nil {
 		return exitError, fmt.Errorf("failed to create processor: %w", err)
-	}
-
-	input, err := readInput(os.Stdin, hookType)
-	if err != nil {
-		return exitError, err
-	}
-
-	// Строка статуса рисуется отдельным процессом и о ходе сессии не знает —
-	// состояние для неё оставляют хуки
-	if state, ok := hookStates[hookType]; ok {
-		core.SaveSessionState(input.SessionID, state)
 	}
 
 	var response *core.HookResponse
@@ -151,19 +161,24 @@ func runHook(ctx context.Context, hookType string) (int, error) {
 	return exitBlocked, nil
 }
 
+// hookUserPromptSubmit хук отправки запроса пользователем
+const hookUserPromptSubmit = "user-prompt-submit"
+
 // hookStates сопоставляет хук состоянию сессии, которое он подтверждает
 var hookStates = map[string]core.SessionState{
-	"pre-tool-use":  core.StateWorking,
-	"post-tool-use": core.StateWorking,
-	"stop":          core.StateDone,
-	"notification":  core.StateWaiting,
+	hookUserPromptSubmit: core.StateWorking,
+	"pre-tool-use":       core.StateWorking,
+	"post-tool-use":      core.StateWorking,
+	"stop":               core.StateDone,
+	"notification":       core.StateWaiting,
 }
 
 // sessionEvents события сессии, приходящие без tool_input:
 // имя инструмента для них задаёт сам хук
 var sessionEvents = map[string]string{
-	"stop":         core.EventStop,
-	"notification": core.EventNotification,
+	"stop":               core.EventStop,
+	"notification":       core.EventNotification,
+	hookUserPromptSubmit: core.EventUserPromptSubmit,
 }
 
 // readInput читает и разбирает данные хука из stdin.
