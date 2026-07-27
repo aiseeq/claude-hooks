@@ -14,17 +14,21 @@ import (
 )
 
 // ANSI-последовательности. Строка статуса должна читаться боковым зрением,
-// поэтому имя проекта выводится плашкой, а не обычным текстом
+// поэтому имя проекта выводится плашкой, а не обычным текстом.
+//
+// Цвета заданы палитрой из 256 значений, а не восьмицветной: базовые цвета
+// терминала темы переопределяют, и жёлтый фон выходит грязно-коричневым
 const (
-	reset     = "\033[0m"
-	dim       = "\033[2m"
-	green     = "\033[32m"
-	yellow    = "\033[33m"
-	red       = "\033[31m"
-	cyan      = "\033[36m"
-	badgeBlue = "\033[1;44;97m"
-	badgeGold = "\033[1;43;30m"
-	badgeRed  = "\033[1;41;97m"
+	reset  = "\033[0m"
+	dim    = "\033[2;37m"
+	green  = "\033[38;5;77m"
+	yellow = "\033[38;5;214m"
+	red    = "\033[38;5;203m"
+	cyan   = "\033[38;5;81m"
+
+	badgeBlue  = "\033[1;38;5;231;48;5;33m"
+	badgeAmber = "\033[1;38;5;16;48;5;214m"
+	badgeRed   = "\033[1;38;5;231;48;5;196m"
 )
 
 // Пороги заполнения контекста, при которых меняется цвет полосы
@@ -91,15 +95,16 @@ func build(ctx context.Context, input Input) (string, string) {
 
 	var output strings.Builder
 	output.WriteString(projectBadge(dir, state, input.ContextWindow.UsedPercentage))
-	output.WriteString("  ")
+	output.WriteString(" ")
 	output.WriteString(dim + shortenPath(dir) + reset)
 
 	if worktree := input.Workspace.GitWorktree; worktree != "" {
 		output.WriteString(dim + " ⑂" + worktree + reset)
 	}
 
-	output.WriteString("\n ")
-	output.WriteString(strings.Join(details(input, git), dim+" · "+reset))
+	for _, part := range details(input, git) {
+		output.WriteString(dim + " · " + reset + part)
+	}
 
 	return output.String(), terminalTitle(dir, git, state, input.ContextWindow.UsedPercentage)
 }
@@ -132,7 +137,7 @@ func projectBadge(dir string, state core.SessionState, contextUsed float64) stri
 	case contextUsed >= contextCriticalPercent:
 		badge = badgeRed
 	case state == core.StateWaiting:
-		badge = badgeGold
+		badge = badgeAmber
 	}
 
 	name := strings.ToUpper(core.ProjectNameForDir(dir))
@@ -147,12 +152,11 @@ func details(input Input, git GitStatus) []string {
 		parts = append(parts, gitSummary(git))
 	}
 
-	if model := input.Model.DisplayName; model != "" {
-		label := model
+	if model := shortModel(input.Model.DisplayName); model != "" {
 		if effort := input.Effort.Level; effort != "" {
-			label += "·" + effort
+			model += "·" + effort
 		}
-		parts = append(parts, cyan+label+reset)
+		parts = append(parts, cyan+model+reset)
 	}
 
 	if used := input.ContextWindow.UsedPercentage; used > 0 {
@@ -164,6 +168,15 @@ func details(input Input, git GitStatus) []string {
 	}
 
 	return parts
+}
+
+// shortModel убирает уточнение в скобках: «Opus 5 (1M context)» занимает
+// в одной строке заметное место, а размер контекста и так виден по полосе
+func shortModel(model string) string {
+	if open := strings.Index(model, " ("); open > 0 {
+		model = model[:open]
+	}
+	return strings.TrimSpace(model)
 }
 
 // gitSummary описывает ветку, незакоммиченные изменения и расхождение с remote
