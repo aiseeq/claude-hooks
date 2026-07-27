@@ -1,54 +1,55 @@
-# Claude Hooks Configuration
-general:
-  log_level: "info"
-  log_file: "~/.claude/logs/claude-hooks.log"
-  timeout: 5000
+# Конфигурация claude-hooks
+#
+# exceptions поддерживает:
+#   - glob по имени файла: "*_test.go", "test-config.*"
+#   - glob по пути:        "src/*/generated.go"
+#   - подстроку пути:      "/cmd/", "/vendor/"
+# Тестовые файлы и документация исключаются автоматически.
 
 logger:
-  level: "info"
-  format: "text"
-  output: "file"
+  level: "info" # debug, info, warn, error
+  format: "text" # text, json
+  output: "file" # stdout, stderr, file
   file: "~/.claude/logs/claude-hooks.log"
+  max_size_mb: 16 # ротация лога при превышении размера, 0 — отключить
 
-# TIER-1 validators - block dangerous patterns
+# Валидаторы содержимого файлов: блокируют запись при нарушении
 validators:
-  emergency_defaults:
-    enabled: true
-    exceptions:
-      - "*_test.go"
-      - "test_*.go"
+  # Запрещает аварийное завершение процесса вне точки входа
   runtime_exit:
     enabled: true
+    go_files_only: true
     exceptions:
-      - "cmd/"
+      - "/cmd/"
       - "main.go"
-      - "*_test.go"
+
+  # Запрещает секреты в исходном коде
   secrets:
     enabled: true
     exceptions:
-      - "*_test.go"
-      - "*.md"
+      - "test-config.*"
+    # Паттерны можно переопределить:
+    # jwt_pattern: "..."
+    # wallet_pattern: "..."
+    # api_key_pattern: "..."
 
-# Tools
+# Инструменты, привязанные к конкретным операциям Claude Code
 tools:
+  # Блокирует опасные bash-команды. blocked_patterns — регулярные выражения;
+  # если список задан, он полностью заменяет встроенный набор
   bash:
     enabled: true
-    blocked_patterns:
-      - "--headed"
-      - "rm -rf /"
-      - "rm -rf ~"
-      - ":(){ :|:& };:"
+
+  # Форматирует файлы после записи
   formatter:
     enabled: true
-    go_format: true
-    ts_format: true
-    formatters:
-      go: "gofmt -w"
-      ts: "prettier --write"
-      tsx: "prettier --write"
-      js: "prettier --write"
-      jsx: "prettier --write"
+    go_format: true # gofmt
+    ts_format: true # prettier
+
+  # Уведомления: Claude Code закончил работу или ждёт ответа
   notifier:
     enabled: true
     sound: true
     desktop: true
+    # Клик по уведомлению переводит фокус на окно терминала (KDE Plasma, X11 и Wayland)
+    activate_on_click: true
