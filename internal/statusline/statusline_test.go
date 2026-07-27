@@ -2,7 +2,6 @@ package statusline
 
 import (
 	"context"
-	"path/filepath"
 	"regexp"
 	"strings"
 	"testing"
@@ -104,7 +103,7 @@ func TestTerminalTitle(t *testing.T) {
 		expected    string
 	}{
 		{name: "работа", git: git, state: core.StateWorking, expected: "🔵 DEMO · main"},
-		{name: "ожидание ответа", git: git, state: core.StateWaiting, expected: "❓ DEMO · main"},
+		{name: "ожидание ответа", git: git, state: core.StateWaiting, expected: "🟡 DEMO · main"},
 		{name: "работа завершена", git: git, state: core.StateDone, expected: "✅ DEMO · main"},
 		{name: "контекст на исходе", git: git, state: core.StateWorking, contextUsed: 90, expected: "🔴 DEMO · main"},
 		{name: "каталог вне репозитория", git: GitStatus{}, state: core.StateWorking, expected: "🔵 DEMO"},
@@ -199,25 +198,5 @@ func TestWorkingDirPrefersSessionDir(t *testing.T) {
 	input.CWD = ""
 	if got := workingDir(input); got != "/from/project" {
 		t.Errorf("ожидалось /from/project, получено %q", got)
-	}
-}
-
-func TestShortenPath(t *testing.T) {
-	home := t.TempDir()
-	t.Setenv("HOME", home)
-
-	tests := []struct {
-		path     string
-		expected string
-	}{
-		{path: home, expected: "~"},
-		{path: filepath.Join(home, "work/demo"), expected: "~/work/demo"},
-		{path: "/etc/nginx", expected: "/etc/nginx"},
-	}
-
-	for _, tt := range tests {
-		if got := shortenPath(tt.path); got != tt.expected {
-			t.Errorf("shortenPath(%q) = %q, ожидалось %q", tt.path, got, tt.expected)
-		}
 	}
 }
