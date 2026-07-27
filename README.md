@@ -119,6 +119,42 @@ claude-hooks config show
 
 Требуется KDE Plasma (KWin 6). В других окружениях уведомление показывается, но без действия по клику — сбоя не происходит. Отключается опцией `activate_on_click: false`.
 
+### Уведомления из других инструментов
+
+Тем же механизмом может пользоваться любой агент или скрипт — командой `notify`:
+
+```bash
+claude-hooks notify \
+  --title "opencode ждёт ответа" \
+  --message "Проект: saga" \
+  --app-name opencode \
+  --window-pid $$
+```
+
+`--window-pid` задаёт процесс, от которого ищется окно; без него берётся сам вызывающий. Указывать его нужно, если команда запускается отсоединённой (`setsid`, `spawn` с `detached`) — такой процесс своих предков уже не помнит.
+
+Команда возвращает управление сразу: звук и ожидание клика уходят в фоновый процесс.
+
+Пример для плагина [opencode](https://opencode.ai) — событие `session.idle` и запрос разрешения:
+
+```js
+import { spawn } from "node:child_process"
+
+const notifier = `${process.env.HOME}/.claude/hooks/claude-hooks`
+
+function notify(title, message) {
+  const child = spawn(notifier, [
+    "notify",
+    "--title", title,
+    "--message", message,
+    "--app-name", "opencode",
+    "--window-pid", String(process.pid),
+  ], { detached: true, stdio: "ignore" })
+  child.on("error", () => {})
+  child.unref()
+}
+```
+
 ## Как это работает
 
 Claude Code передаёт хуку JSON на stdin и интерпретирует код возврата:
