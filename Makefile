@@ -16,7 +16,10 @@ build: ## Собрать бинарь в bin/
 
 install: build ## Установить бинарь и конфигурацию в ~/.claude/hooks
 	@mkdir -p $(INSTALL_DIR) $(HOME)/.claude/logs
-	@cp $(BUILD_DIR)/$(BINARY_NAME) $(INSTALL_DIR)/
+	@# Замена через переименование: прямая перезапись падает с "Text file busy",
+	@# пока работает фоновый процесс уведомления
+	@cp $(BUILD_DIR)/$(BINARY_NAME) $(INSTALL_DIR)/$(BINARY_NAME).new
+	@mv -f $(INSTALL_DIR)/$(BINARY_NAME).new $(INSTALL_DIR)/$(BINARY_NAME)
 	@if [ -f $(CONFIG_FILE) ]; then \
 		cp configs/hooks.yaml $(CONFIG_FILE).new; \
 		echo "Конфигурация сохранена: существующий $(CONFIG_FILE) не изменён"; \
