@@ -26,5 +26,10 @@
         "hooks": [{ "type": "command", "command": "$HOME/.claude/hooks/claude-hooks stop", "timeout": 3 }]
       }
     ]
+  },
+  "statusLine": {
+    "type": "command",
+    "command": "$HOME/.claude/hooks/claude-hooks statusline",
+    "padding": 0
   }
 }

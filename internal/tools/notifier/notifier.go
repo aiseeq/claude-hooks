@@ -54,7 +54,7 @@ func (t *NotifierTool) ValidateTool(ctx context.Context, input *core.ToolInput) 
 	}
 
 	// Заголовок окна — подсказка в списке окон и в панели задач
-	fmt.Fprintf(os.Stderr, "\033]0;%s\007", terminalTitle)
+	desktop.SetTerminalTitle(terminalTitle)
 
 	t.Logger().Debug("session event",
 		"event", input.ToolName,
@@ -98,13 +98,13 @@ func (t *NotifierTool) buildAlert(input *core.ToolInput, projectName string) (de
 
 	switch input.ToolName {
 	case core.EventStop:
-		terminalTitle = fmt.Sprintf("🔔 Claude Code [%s] — готово", projectName)
+		terminalTitle = fmt.Sprintf("✅ %s · готово", strings.ToUpper(projectName))
 		alert.Title = "Claude Code завершил работу"
 		alert.Message = "Проект: " + projectName
 		alert.Timeout = stopTimeout
 
 	case core.EventNotification:
-		terminalTitle = fmt.Sprintf("❓ Claude Code [%s] — ждёт ответа", projectName)
+		terminalTitle = fmt.Sprintf("❓ %s · ждёт ответа", strings.ToUpper(projectName))
 		alert.Title = fmt.Sprintf("Claude Code ждёт ответа (%s)", projectName)
 		// Claude Code сообщает, чего именно ждёт: разрешения на инструмент или ввода
 		alert.Message = input.Message
@@ -124,56 +124,20 @@ func (t *NotifierTool) buildAlert(input *core.ToolInput, projectName string) (de
 // источник, путь транскрипта используется как запасной вариант
 func (t *NotifierTool) ProjectName(input *core.ToolInput) string {
 	if input.CWD != "" {
-		return projectNameForDir(input.CWD)
+		return core.ProjectNameForDir(input.CWD)
 	}
 
 	if transcriptPath := input.TranscriptPath; transcriptPath != "" {
 		encoded := filepath.Base(filepath.Dir(transcriptPath))
 		if dir := decodeProjectDir(encoded); dir != "" {
-			return projectNameForDir(dir)
+			return core.ProjectNameForDir(dir)
 		}
 	}
 
 	if wd, err := os.Getwd(); err == nil {
-		return projectNameForDir(wd)
+		return core.ProjectNameForDir(wd)
 	}
 
-	return "unknown"
-}
-
-// projectNameForDir возвращает имя проекта по его каталогу.
-//
-// Одного последнего сегмента не всегда достаточно: ~/work/saga/backend и
-// ~/work/glint/backend дали бы одинаковое имя. Поэтому у вложенных проектов
-// показывается и родительский каталог. Домашний каталог и корень своего имени
-// не имеют — для них возвращаются понятные обозначения, а не имя пользователя
-func projectNameForDir(dir string) string {
-	dir = filepath.Clean(dir)
-
-	if dir == string(filepath.Separator) {
-		return "/"
-	}
-
-	home, err := os.UserHomeDir()
-	if err == nil {
-		home = filepath.Clean(home)
-		if dir == home {
-			return "~"
-		}
-
-		// Внутри домашнего каталога первый уровень — папка вроде work или git,
-		// имени проекта она не добавляет
-		if relative, relErr := filepath.Rel(home, dir); relErr == nil && !strings.HasPrefix(relative, "..") {
-			segments := strings.Split(relative, string(filepath.Separator))
-			if len(segments) >= 3 {
-				return filepath.Join(segments[len(segments)-2], segments[len(segments)-1])
-			}
-		}
-	}
-
-	if base := filepath.Base(dir); base != "." && base != string(filepath.Separator) {
-		return base
-	}
 	return "unknown"
 }
 
