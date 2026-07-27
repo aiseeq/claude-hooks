@@ -164,11 +164,13 @@ Konsole собирает заголовок по шаблону (`%d : %n` по 
 ```css
 QTabBar::tab {
     font-size: 16pt;
-    font-weight: bold;
+    font-weight: normal;
     padding: 2px 12px;
     min-height: 24px;
 }
 ```
+
+Жирное начертание на таком кегле сливается — размера достаточно и без него.
 
 и настройки Konsole:
 
