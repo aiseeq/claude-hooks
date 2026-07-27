@@ -14,6 +14,9 @@ const (
 	// konsoleLocalTab — контекст формата заголовка для локальной сессии.
 	// У удалённой (ssh) сессии формат свой, но хуки работают локально
 	konsoleLocalTab = int32(0)
+
+	// konsoleDisplayedTitle — роль показываемого заголовка, а не имени профиля
+	konsoleDisplayedTitle = int32(1)
 )
 
 // SetTerminalTitle меняет заголовок окна терминала.
@@ -49,9 +52,17 @@ func setKonsoleTitle(title string) bool {
 		return false
 	}
 
-	call := conn.Object(service, dbus.ObjectPath(session)).Call(
-		konsoleSessionIface+".setTabTitleFormat", 0, konsoleLocalTab, title)
-	return call.Err == nil
+	object := conn.Object(service, dbus.ObjectPath(session))
+
+	// Шаблон переживает перерисовку заголовка, но применяется не сразу:
+	// Konsole пересобирает заголовок по событиям сессии. Поэтому текущий
+	// заголовок задаётся ещё и напрямую
+	if call := object.Call(konsoleSessionIface+".setTabTitleFormat", 0, konsoleLocalTab, title); call.Err != nil {
+		return false
+	}
+	object.Call(konsoleSessionIface+".setTitle", 0, konsoleDisplayedTitle, title)
+
+	return true
 }
 
 // sanitizeTitle убирает из заголовка то, что исказит его при выводе:
