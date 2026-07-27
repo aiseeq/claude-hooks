@@ -36,8 +36,9 @@ const (
 
 // Имена событий, под которыми инструменты объявляют поддержку сессионных хуков
 const (
-	EventStop         = "Stop"
-	EventNotification = "Notification"
+	EventStop             = "Stop"
+	EventNotification     = "Notification"
+	EventUserPromptSubmit = "UserPromptSubmit"
 )
 
 // phaseContextKey приватный тип ключа контекста — исключает коллизии между пакетами

@@ -56,6 +56,17 @@ func (t *NotifierTool) ValidateTool(ctx context.Context, input *core.ToolInput) 
 	// Заголовок окна — подсказка в списке окон и в панели задач
 	desktop.SetTerminalTitle(terminalTitle)
 
+	// Пока Claude ждёт, Claude Code напоминает о себе тем же событием.
+	// Человека уже позвали один раз, и повторный звонок только отвлекает:
+	// по вкладкам он пройдётся сам, когда освободится
+	if previous := core.PreviousStateFromContext(ctx); previous != core.StateWorking {
+		t.Logger().Debug("alert skipped: session already idle",
+			"event", input.ToolName,
+			"previous_state", string(previous),
+		)
+		return &core.ValidationResult{IsValid: true}, nil
+	}
+
 	t.Logger().Debug("session event",
 		"event", input.ToolName,
 		"project", projectName,
