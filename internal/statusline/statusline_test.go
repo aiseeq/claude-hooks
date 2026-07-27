@@ -1,6 +1,7 @@
 package statusline
 
 import (
+	"context"
 	"path/filepath"
 	"regexp"
 	"strings"
@@ -22,7 +23,7 @@ func TestProjectBadgeShowsState(t *testing.T) {
 		expected    string
 	}{
 		{name: "работа", state: core.StateWorking, contextUsed: 10, expected: badgeBlue},
-		{name: "ожидание ответа", state: core.StateWaiting, contextUsed: 10, expected: badgeGold},
+		{name: "ожидание ответа", state: core.StateWaiting, contextUsed: 10, expected: badgeAmber},
 		{name: "работа завершена", state: core.StateDone, contextUsed: 10, expected: badgeBlue},
 		// Переполненный контекст важнее прочего: скоро сожмётся история
 		{name: "контекст важнее ожидания", state: core.StateWaiting, contextUsed: 90, expected: badgeRed},
@@ -137,6 +138,40 @@ func TestDetails(t *testing.T) {
 		if got := plain(parts[i]); got != want {
 			t.Errorf("элемент %d: ожидалось %q, получено %q", i, want, got)
 		}
+	}
+}
+
+func TestShortModel(t *testing.T) {
+	tests := map[string]string{
+		"Opus 5 (1M context)": "Opus 5",
+		"Opus 5":              "Opus 5",
+		"":                    "",
+	}
+
+	for model, expected := range tests {
+		if got := shortModel(model); got != expected {
+			t.Errorf("shortModel(%q) = %q, ожидалось %q", model, got, expected)
+		}
+	}
+}
+
+func TestBuildFitsSingleLine(t *testing.T) {
+	t.Setenv("XDG_RUNTIME_DIR", t.TempDir())
+
+	input := Input{CWD: t.TempDir()}
+	input.Model.DisplayName = "Opus 5 (1M context)"
+	input.ContextWindow.UsedPercentage = 47
+
+	line, title := build(context.Background(), input)
+
+	if strings.Contains(line, "\n") {
+		t.Errorf("строка статуса должна умещаться в одну строку: %q", line)
+	}
+	if strings.Contains(plain(line), "1M context") {
+		t.Errorf("уточнение модели должно убираться: %q", plain(line))
+	}
+	if !strings.HasPrefix(title, "🔵 ") {
+		t.Errorf("заголовок должен начинаться со значка состояния: %q", title)
 	}
 }
 
