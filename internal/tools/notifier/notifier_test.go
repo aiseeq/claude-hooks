@@ -59,6 +59,40 @@ func TestNotifierTool_HandlesSessionEvents(t *testing.T) {
 	}
 }
 
+func TestNotifierTool_SkipsRepeatedReminders(t *testing.T) {
+	tool := newNotifier(t, core.ToolConfig{Enabled: true, Sound: false, Desktop: false})
+
+	tests := []struct {
+		name     string
+		previous core.SessionState
+		event    string
+		notified bool
+	}{
+		// Пока Claude ждёт, Claude Code напоминает о себе тем же событием
+		{name: "первый вопрос", previous: core.StateWorking, event: core.EventNotification, notified: true},
+		{name: "напоминание о вопросе", previous: core.StateWaiting, event: core.EventNotification, notified: false},
+		{name: "завершение работы", previous: core.StateWorking, event: core.EventStop, notified: true},
+		{name: "напоминание после завершения", previous: core.StateDone, event: core.EventNotification, notified: false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			ctx := core.WithPreviousState(context.Background(), tt.previous)
+			result, err := tool.ValidateTool(ctx, &core.ToolInput{
+				ToolName: tt.event,
+				CWD:      "/home/user/work/my-project",
+			})
+			if err != nil {
+				t.Fatalf("validation failed: %v", err)
+			}
+
+			if notified := len(result.Suggestions) > 0; notified != tt.notified {
+				t.Errorf("уведомление отправлено = %v, ожидалось %v", notified, tt.notified)
+			}
+		})
+	}
+}
+
 func TestNotifierTool_BuildAlert(t *testing.T) {
 	tool := newNotifier(t, core.ToolConfig{
 		Enabled:         true,
