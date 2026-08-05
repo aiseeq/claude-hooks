@@ -86,6 +86,9 @@ func (e *Engine) initTools(config *core.Config) error {
 		{"formatter", func(c core.ToolConfig, l core.Logger) (core.ToolValidator, error) {
 			return tools.NewFormatterTool(c, l)
 		}},
+		{"jira_style", func(c core.ToolConfig, l core.Logger) (core.ToolValidator, error) {
+			return tools.NewJiraStyleTool(c, l)
+		}},
 		{"notifier", func(c core.ToolConfig, l core.Logger) (core.ToolValidator, error) {
 			return notifier.NewNotifierTool(c, l)
 		}},

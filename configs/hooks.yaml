@@ -40,6 +40,11 @@ tools:
   bash:
     enabled: true
 
+  # Блокирует отправку комментария в Jira с маркерами агентского стиля
+  # (длинное тире, markdown) — текст обязан пройти через скилл write-as-user
+  jira_style:
+    enabled: true
+
   # Форматирует файлы после записи
   formatter:
     enabled: true
