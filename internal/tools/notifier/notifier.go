@@ -131,6 +131,13 @@ func (t *NotifierTool) buildAlert(input *core.ToolInput, projectName string) (de
 	return alert, terminalTitle, true
 }
 
+// IsIdleReminder распознаёт минутное напоминание «Claude is waiting for your
+// input» (тип idle_prompt). Запрос разрешения инструменту им не является:
+// его глушить нельзя — без ответа человека сессия встанет
+func IsIdleReminder(message string) bool {
+	return strings.Contains(strings.ToLower(message), "waiting for your input")
+}
+
 // ProjectName определяет имя проекта: рабочая директория сессии — самый надёжный
 // источник, путь транскрипта используется как запасной вариант
 func (t *NotifierTool) ProjectName(input *core.ToolInput) string {
