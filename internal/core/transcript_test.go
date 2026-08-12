@@ -5,6 +5,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 // Записи транскрипта в тестах повторяют структуру реальных: запуск задачи —
@@ -102,6 +103,23 @@ func TestPendingBackgroundTasks_TaskStopRemoves(t *testing.T) {
 
 	if got := PendingBackgroundTasks(writeTranscript(t, lines)); got != 0 {
 		t.Errorf("остановленная задача уведомления не пришлёт, насчитано %d", got)
+	}
+}
+
+// Вечный фоновый процесс не должен глушить уведомления до конца сессии:
+// запуск старше TTL без отчёта перестаёт считаться живым
+func TestPendingBackgroundTasks_StaleLaunchExpires(t *testing.T) {
+	stale := time.Now().Add(-3 * time.Hour).UTC().Format(time.RFC3339)
+	fresh := time.Now().UTC().Format(time.RFC3339)
+	lines := []string{
+		`{"type":"assistant","message":{"content":[{"type":"tool_use","id":"toolu_40","name":"Bash","input":{"command":"./dev-server","run_in_background":true}}]}}`,
+		`{"type":"user","timestamp":"` + stale + `","message":{"content":[{"type":"tool_result","tool_use_id":"toolu_40","content":"Command running in background with ID: eternal1"}]}}`,
+		`{"type":"assistant","message":{"content":[{"type":"tool_use","id":"toolu_41","name":"Agent","input":{"prompt":"work"}}]}}`,
+		`{"type":"user","timestamp":"` + fresh + `","message":{"content":[{"type":"tool_result","tool_use_id":"toolu_41","content":"Async agent launched successfully\nagentId: fresh1 (internal)"}]}}`,
+	}
+
+	if got := PendingBackgroundTasks(writeTranscript(t, lines)); got != 1 {
+		t.Errorf("просроченный запуск не должен считаться, ожидалась 1 живая задача, насчитано %d", got)
 	}
 }
 
