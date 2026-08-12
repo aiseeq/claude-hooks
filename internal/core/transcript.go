@@ -6,6 +6,7 @@ import (
 	"os"
 	"regexp"
 	"strings"
+	"time"
 )
 
 // Маркеры фоновых задач в транскрипте сессии Claude Code: результат запуска
@@ -16,11 +17,17 @@ var (
 	taskNotified  = regexp.MustCompile(`<task-id>([A-Za-z0-9_-]+)</task-id>`)
 )
 
+// Задача без отчёта дольше этого срока считается брошенной и уведомления
+// больше не глушит: вечный фоновый процесс иначе заглушил бы их до конца
+// сессии. Просроченная живая задача даёт лишний звонок — меньшее зло
+const pendingTaskTTL = 2 * time.Hour
+
 // transcriptRecord — строка транскрипта: тип записи и содержимое сообщения.
 // Содержимое бывает строкой или списком блоков, поэтому разбирается отложенно
 type transcriptRecord struct {
-	Type    string `json:"type"`
-	Message struct {
+	Type      string `json:"type"`
+	Timestamp string `json:"timestamp"`
+	Message   struct {
 		Content json.RawMessage `json:"content"`
 	} `json:"message"`
 }
@@ -58,7 +65,7 @@ func PendingBackgroundTasks(transcriptPath string) int {
 
 	// Извлечение идентификатора задачи из результата запустившего её вызова
 	launchers := map[string]*regexp.Regexp{}
-	pending := map[string]bool{}
+	pending := map[string]time.Time{}
 
 	scanner := bufio.NewScanner(f)
 	// Записи транскрипта с вложениями бывают на мегабайты
@@ -107,18 +114,26 @@ func PendingBackgroundTasks(transcriptPath string) int {
 						continue
 					}
 					if m := extract.FindStringSubmatch(flattenContent(block.Content)); m != nil {
-						pending[m[1]] = true
+						launched, _ := time.Parse(time.RFC3339, record.Timestamp)
+						pending[m[1]] = launched
 					}
 				}
 			}
 		}
 	}
 
-	return len(pending)
+	alive := 0
+	for _, launched := range pending {
+		// Нулевое время (нет отметки в записи) не повод считать задачу брошенной
+		if launched.IsZero() || time.Since(launched) < pendingTaskTTL {
+			alive++
+		}
+	}
+	return alive
 }
 
 // completeNotifiedTasks вычёркивает задачи, упомянутые в уведомлении о завершении
-func completeNotifiedTasks(pending map[string]bool, text string) {
+func completeNotifiedTasks(pending map[string]time.Time, text string) {
 	if !strings.Contains(text, "<task-notification>") {
 		return
 	}
