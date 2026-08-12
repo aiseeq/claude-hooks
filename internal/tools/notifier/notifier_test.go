@@ -290,3 +290,17 @@ func TestDecodeProjectDir_LeadingDashInName(t *testing.T) {
 		t.Errorf("ожидалось %q, получено %q", nested, got)
 	}
 }
+
+// Напоминание об ожидании глушится при живых фоновых задачах, запрос
+// разрешения — никогда
+func TestIsIdleReminder(t *testing.T) {
+	if !IsIdleReminder("Claude is waiting for your input") {
+		t.Error("минутное напоминание не распознано")
+	}
+	if IsIdleReminder("Claude needs your permission to use Bash") {
+		t.Error("запрос разрешения не должен считаться напоминанием")
+	}
+	if IsIdleReminder("") {
+		t.Error("пустое сообщение не напоминание")
+	}
+}
