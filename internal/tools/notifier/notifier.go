@@ -67,7 +67,9 @@ func (t *NotifierTool) ValidateTool(ctx context.Context, input *core.ToolInput) 
 		return &core.ValidationResult{IsValid: true}, nil
 	}
 
-	t.Logger().Debug("session event",
+	// Info, а не Debug: по этой записи отличают уведомление хука от
+	// собственных уведомлений Claude Code — со стороны они неразличимы
+	t.Logger().Info("alert delivered",
 		"event", input.ToolName,
 		"project", projectName,
 		"activate_pids", len(alert.ActivatePIDs),
