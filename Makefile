@@ -6,7 +6,7 @@ CONFIG_FILE=$(INSTALL_DIR)/config.yaml
 
 LDFLAGS=-ldflags "-X main.Version=$(VERSION)"
 
-.PHONY: all build install uninstall test test-race cover fmt lint version help
+.PHONY: all build install uninstall test test-race cover fmt lint version help smoke commit
 
 all: build
 
@@ -62,6 +62,28 @@ clean: ## Удалить артефакты сборки
 
 version: ## Показать версию
 	@echo $(VERSION)
+
+smoke: ## Быстрая проверка перед коммитом: сборка и тесты
+	go build ./...
+	go test ./...
+
+# MESSAGE идёт в рецепт через окружение, а не через $(MESSAGE): подстановка make
+# разрывает рецепт на первом переносе строки в тексте коммита
+export MESSAGE
+
+commit: smoke ## Закоммитить всё и запушить (make commit MESSAGE="...")
+	@if [ -z "$$MESSAGE" ]; then \
+		echo "Использование: make commit MESSAGE=\"сообщение коммита\""; \
+		exit 1; \
+	fi
+	@git add -A
+	@printf '%s\n\n%s\n\n%s\n' \
+		"$$MESSAGE" \
+		"🤖 Generated with Claude Code" \
+		"Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>" \
+		| git commit -F -
+	@echo "Committed: $$(printf '%s' "$$MESSAGE" | head -1)"
+	@git remote | xargs -I% git push % HEAD
 
 help: ## Показать список целей
 	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) | sort | awk 'BEGIN {FS = ":.*?## "}; {printf "\033[36m%-15s\033[0m %s\n", $$1, $$2}'
