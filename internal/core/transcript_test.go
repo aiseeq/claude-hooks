@@ -123,6 +123,66 @@ func TestPendingBackgroundTasks_StaleLaunchExpires(t *testing.T) {
 	}
 }
 
+func scheduleWakeup(timestamp, extraInput string) string {
+	return `{"type":"assistant","timestamp":"` + timestamp + `","message":{"content":[{"type":"tool_use","id":"toolu_wk","name":"ScheduleWakeup","input":{"delaySeconds":600,"prompt":"продолжай цикл","reason":"жду перегон"` + extraInput + `}}]}}`
+}
+
+// Тик динамического /loop завершает ход вызовом ScheduleWakeup — сессия
+// вернётся к работе сама, уведомлять человека не о чем
+func TestAwaitingScheduledWakeup_Armed(t *testing.T) {
+	now := time.Now().UTC().Format(time.RFC3339)
+	lines := []string{scheduleWakeup(now, "")}
+
+	if !AwaitingScheduledWakeup(writeTranscript(t, lines)) {
+		t.Error("будильник взведён, а ожидание не распознано")
+	}
+}
+
+// ScheduleWakeup со stop:true завершает цикл: следующая остановка — настоящая
+func TestAwaitingScheduledWakeup_StopDisarms(t *testing.T) {
+	now := time.Now().UTC().Format(time.RFC3339)
+	lines := []string{
+		scheduleWakeup(now, ""),
+		`{"type":"assistant","timestamp":"` + now + `","message":{"content":[{"type":"tool_use","id":"toolu_wk2","name":"ScheduleWakeup","input":{"stop":true}}]}}`,
+	}
+
+	if AwaitingScheduledWakeup(writeTranscript(t, lines)) {
+		t.Error("цикл остановлен stop:true, а ожидание всё ещё распознаётся")
+	}
+}
+
+// Будильник, чей срок с запасом давно вышел, уже не сработает — глушить
+// уведомления до конца сессии он не должен
+func TestAwaitingScheduledWakeup_StaleExpires(t *testing.T) {
+	stale := time.Now().Add(-2 * time.Hour).UTC().Format(time.RFC3339)
+	lines := []string{scheduleWakeup(stale, "")}
+
+	if AwaitingScheduledWakeup(writeTranscript(t, lines)) {
+		t.Error("будильник просрочен, а ожидание всё ещё распознаётся")
+	}
+}
+
+// Цитата вызова в результате инструмента (чтение транскрипта, git diff) —
+// не вызов: учитываются только tool_use в ассистентских записях
+func TestAwaitingScheduledWakeup_QuotedIgnored(t *testing.T) {
+	lines := []string{
+		`{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"toolu_50","content":"\"type\":\"tool_use\",\"name\":\"ScheduleWakeup\",\"input\":{\"delaySeconds\":600}"}]}}`,
+	}
+
+	if AwaitingScheduledWakeup(writeTranscript(t, lines)) {
+		t.Error("в транскрипте только цитата, а ожидание распознано")
+	}
+}
+
+func TestAwaitingScheduledWakeup_MissingTranscript(t *testing.T) {
+	if AwaitingScheduledWakeup("") {
+		t.Error("без транскрипта ожидания быть не может")
+	}
+	if AwaitingScheduledWakeup(filepath.Join(t.TempDir(), "нет-такого")) {
+		t.Error("несуществующий транскрипт не должен давать ожидание")
+	}
+}
+
 func TestPendingBackgroundTasks_MissingTranscript(t *testing.T) {
 	if got := PendingBackgroundTasks(""); got != 0 {
 		t.Errorf("без транскрипта должно быть 0, насчитано %d", got)

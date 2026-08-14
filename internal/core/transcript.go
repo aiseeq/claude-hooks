@@ -22,6 +22,11 @@ var (
 // сессии. Просроченная живая задача даёт лишний звонок — меньшее зло
 const pendingTaskTTL = 2 * time.Hour
 
+// Будильник /loop живёт не дольше своей задержки плюс этот запас на рабочий
+// ход после пробуждения: живой цикл к концу хода взводит будильник заново
+// либо выключает его, а забытый не должен глушить уведомления до конца сессии
+const wakeupGrace = 30 * time.Minute
+
 // transcriptRecord — строка транскрипта: тип записи и содержимое сообщения.
 // Содержимое бывает строкой или списком блоков, поэтому разбирается отложенно
 type transcriptRecord struct {
@@ -132,6 +137,58 @@ func PendingBackgroundTasks(transcriptPath string) int {
 	return alive
 }
 
+// AwaitingScheduledWakeup сообщает, взведён ли в сессии будильник ScheduleWakeup
+// (динамический /loop): остановка хода с взведённым будильником — не завершение
+// работы, Claude вернётся сам. Взведённым считается последний по транскрипту
+// вызов ScheduleWakeup без stop:true, пока не истекла его задержка с запасом
+// wakeupGrace. Ищется только tool_use в ассистентских записях: цитаты в
+// прочитанных файлах и результатах команд вызовами не являются
+func AwaitingScheduledWakeup(transcriptPath string) bool {
+	if transcriptPath == "" {
+		return false
+	}
+	f, err := os.Open(transcriptPath)
+	if err != nil {
+		return false
+	}
+	// Файл открыт только на чтение — ошибка закрытия ни на что не влияет
+	defer func() { _ = f.Close() }()
+
+	var armed bool
+	var deadline time.Time
+
+	scanner := bufio.NewScanner(f)
+	// Записи транскрипта с вложениями бывают на мегабайты
+	scanner.Buffer(make([]byte, 0, 1024*1024), 64*1024*1024)
+	for scanner.Scan() {
+		var record transcriptRecord
+		if err := json.Unmarshal(scanner.Bytes(), &record); err != nil {
+			continue
+		}
+		if record.Type != "assistant" {
+			continue
+		}
+		for _, block := range contentBlocks(record.Message.Content) {
+			if block.Type != "tool_use" || block.Name != "ScheduleWakeup" {
+				continue
+			}
+			if boolInput(block.Input, "stop") {
+				armed = false
+				continue
+			}
+			armed = true
+			deadline = time.Time{}
+			if at, err := time.Parse(time.RFC3339, record.Timestamp); err == nil {
+				delay := time.Duration(numberInput(block.Input, "delaySeconds") * float64(time.Second))
+				deadline = at.Add(delay + wakeupGrace)
+			}
+		}
+	}
+
+	// Нулевой дедлайн (запись без отметки времени) не повод считать будильник забытым
+	return armed && (deadline.IsZero() || time.Now().Before(deadline))
+}
+
 // completeNotifiedTasks вычёркивает задачи, упомянутые в уведомлении о завершении
 func completeNotifiedTasks(pending map[string]time.Time, text string) {
 	if !strings.Contains(text, "<task-notification>") {
@@ -175,6 +232,16 @@ func boolInput(raw json.RawMessage, key string) bool {
 		return false
 	}
 	value, _ := input[key].(bool)
+	return value
+}
+
+// numberInput извлекает числовое поле из параметров вызова инструмента
+func numberInput(raw json.RawMessage, key string) float64 {
+	var input map[string]any
+	if err := json.Unmarshal(raw, &input); err != nil {
+		return 0
+	}
+	value, _ := input[key].(float64)
 	return value
 }
 

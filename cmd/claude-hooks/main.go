@@ -103,13 +103,14 @@ func runHook(ctx context.Context, hookType string) (int, error) {
 		return exitError, err
 	}
 
-	// Остановка и минутное напоминание при живых фоновых задачах — не события
-	// для человека: Claude вернётся к работе сам, когда задача отчитается.
-	// Пропускаются целиком, до записи состояния, — иначе «готово» или «ждёт»
-	// соврали бы строке статуса, а финальная остановка выглядела бы повтором
-	// и осталась без уведомления. Запрос разрешения проходит всегда: без
-	// ответа человека сессия встанет
-	if backgroundTasksMute(hookType, input) {
+	// Остановка и минутное напоминание при живых фоновых задачах или взведённом
+	// будильнике /loop — не события для человека: Claude вернётся к работе сам,
+	// когда задача отчитается или будильник сработает. Пропускаются целиком,
+	// до записи состояния, — иначе «готово» или «ждёт» соврали бы строке
+	// статуса, а финальная остановка выглядела бы повтором и осталась без
+	// уведомления. Запрос разрешения проходит всегда: без ответа человека
+	// сессия встанет
+	if autoResumeMute(hookType, input) {
 		return exitAllowed, nil
 	}
 
@@ -171,9 +172,10 @@ func runHook(ctx context.Context, hookType string) (int, error) {
 	return exitBlocked, nil
 }
 
-// backgroundTasksMute сообщает, глушится ли событие из-за живых фоновых задач:
+// autoResumeMute сообщает, глушится ли событие из-за того, что сессия вернётся
+// к работе сама — по живой фоновой задаче или взведённому будильнику /loop:
 // остановка — всегда, уведомление — только минутное напоминание об ожидании
-func backgroundTasksMute(hookType string, input *core.ToolInput) bool {
+func autoResumeMute(hookType string, input *core.ToolInput) bool {
 	switch hookType {
 	case "stop":
 	case "notification":
@@ -183,7 +185,8 @@ func backgroundTasksMute(hookType string, input *core.ToolInput) bool {
 	default:
 		return false
 	}
-	return core.PendingBackgroundTasks(input.TranscriptPath) > 0
+	return core.PendingBackgroundTasks(input.TranscriptPath) > 0 ||
+		core.AwaitingScheduledWakeup(input.TranscriptPath)
 }
 
 // hookUserPromptSubmit хук отправки запроса пользователем
