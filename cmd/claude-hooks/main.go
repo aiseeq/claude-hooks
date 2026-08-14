@@ -110,8 +110,14 @@ func runHook(ctx context.Context, hookType string) (int, error) {
 	// статуса, а финальная остановка выглядела бы повтором и осталась без
 	// уведомления. Запрос разрешения проходит всегда: без ответа человека
 	// сессия встанет
-	if autoResumeMute(hookType, input) {
-		return exitAllowed, nil
+	if hookType == "stop" || hookType == "notification" {
+		// Решение по событию сессии разбирают постфактум («почему позвонило»,
+		// «почему не позвонило»), а событие приходит и уходит бесследно
+		reason := autoResumeMute(hookType, input)
+		logDecision(hookType, input, reason)
+		if reason != "" {
+			return exitAllowed, nil
+		}
 	}
 
 	// Строка статуса рисуется отдельным процессом и о ходе сессии не знает —
@@ -173,20 +179,53 @@ func runHook(ctx context.Context, hookType string) (int, error) {
 }
 
 // autoResumeMute сообщает, глушится ли событие из-за того, что сессия вернётся
-// к работе сама — по живой фоновой задаче или взведённому будильнику /loop:
-// остановка — всегда, уведомление — только минутное напоминание об ожидании
-func autoResumeMute(hookType string, input *core.ToolInput) bool {
+// к работе сама — по живой фоновой задаче или взведённому будильнику /loop, —
+// и называет причину; пустая строка означает «не глушить». Остановка глушится
+// всегда, уведомление — только минутное напоминание об ожидании
+func autoResumeMute(hookType string, input *core.ToolInput) string {
 	switch hookType {
 	case "stop":
 	case "notification":
 		if !notifier.IsIdleReminder(input.Message) {
-			return false
+			return ""
 		}
 	default:
-		return false
+		return ""
 	}
-	return core.PendingBackgroundTasks(input.TranscriptPath) > 0 ||
-		core.AwaitingScheduledWakeup(input.TranscriptPath)
+	if n := core.PendingBackgroundTasks(input.TranscriptPath); n > 0 {
+		return fmt.Sprintf("живых фоновых задач: %d", n)
+	}
+	if core.AwaitingScheduledWakeup(input.TranscriptPath) {
+		return "взведён будильник /loop"
+	}
+	return ""
+}
+
+// logDecision записывает решение по событию сессии вместе с тем, из чего оно
+// сделано: без пути транскрипта и счётчиков непонятно, глушение промахнулось
+// или сессии правда нечего ждать. Логгер поднимается отдельно — до этого места
+// конфиг ещё не читался; при любой осечке событие просто останется без записи
+func logDecision(hookType string, input *core.ToolInput, reason string) {
+	config, err := core.LoadConfig(configPath)
+	if err != nil {
+		return
+	}
+	logger, err := core.NewLogger(config.Logger)
+	if err != nil {
+		return
+	}
+	if reason != "" {
+		logger.Info("alert muted: session resumes on its own",
+			"hook", hookType, "reason", reason)
+		return
+	}
+	logger.Info("alert allowed: nothing to wait for",
+		"hook", hookType,
+		"transcript", input.TranscriptPath,
+		"session", input.SessionID,
+		"pending_tasks", core.PendingBackgroundTasks(input.TranscriptPath),
+		"wakeup_armed", core.AwaitingScheduledWakeup(input.TranscriptPath),
+	)
 }
 
 // hookUserPromptSubmit хук отправки запроса пользователем
