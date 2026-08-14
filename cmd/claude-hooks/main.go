@@ -183,6 +183,11 @@ func runHook(ctx context.Context, hookType string) (int, error) {
 // и называет причину; пустая строка означает «не глушить». Остановка глушится
 // всегда, уведомление — только минутное напоминание об ожидании
 func autoResumeMute(hookType string, input *core.ToolInput) string {
+	// Неинтерактивную сессию человек не ждёт вовсе — ни её остановку, ни её
+	// вопросы: ответить в неё всё равно некому
+	if core.PrintModeSession() {
+		return "неинтерактивная сессия claude -p"
+	}
 	switch hookType {
 	case "stop":
 	case "notification":
