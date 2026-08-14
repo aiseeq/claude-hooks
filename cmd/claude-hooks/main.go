@@ -103,6 +103,16 @@ func runHook(ctx context.Context, hookType string) (int, error) {
 		return exitError, err
 	}
 
+	// Остановка и минутное напоминание при живых фоновых задачах — не события
+	// для человека: Claude вернётся к работе сам, когда задача отчитается.
+	// Пропускаются целиком, до записи состояния, — иначе «готово» или «ждёт»
+	// соврали бы строке статуса, а финальная остановка выглядела бы повтором
+	// и осталась без уведомления. Запрос разрешения проходит всегда: без
+	// ответа человека сессия встанет
+	if backgroundTasksMute(hookType, input) {
+		return exitAllowed, nil
+	}
+
 	// Строка статуса рисуется отдельным процессом и о ходе сессии не знает —
 	// состояние для неё оставляют хуки. Предыдущее состояние идёт в контекст:
 	// по нему виден переход, а не только новое состояние
@@ -159,6 +169,21 @@ func runHook(ctx context.Context, hookType string) (int, error) {
 	}
 	// Warn и Block одинаково возвращают 2: только этот код доносит сообщение до модели
 	return exitBlocked, nil
+}
+
+// backgroundTasksMute сообщает, глушится ли событие из-за живых фоновых задач:
+// остановка — всегда, уведомление — только минутное напоминание об ожидании
+func backgroundTasksMute(hookType string, input *core.ToolInput) bool {
+	switch hookType {
+	case "stop":
+	case "notification":
+		if !notifier.IsIdleReminder(input.Message) {
+			return false
+		}
+	default:
+		return false
+	}
+	return core.PendingBackgroundTasks(input.TranscriptPath) > 0
 }
 
 // hookUserPromptSubmit хук отправки запроса пользователем
