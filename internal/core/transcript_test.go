@@ -26,6 +26,17 @@ func bashLaunch(toolUseID, taskID string) []string {
 	}
 }
 
+func monitorLaunch(toolUseID, taskID string) []string {
+	return []string{
+		`{"type":"assistant","message":{"content":[{"type":"tool_use","id":"` + toolUseID + `","name":"Monitor","input":{"command":"tail -f log","description":"log","timeout_ms":60000,"persistent":false}}]}}`,
+		`{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"` + toolUseID + `","content":"Monitor started (task ` + taskID + `, timeout 60000ms). You will be notified on each event."}]}}`,
+	}
+}
+
+func monitorEvent(taskID, event string) string {
+	return `{"type":"user","message":{"content":"<task-notification>\n<task-id>` + taskID + `</task-id>\n<summary>Monitor event: \"log\"</summary>\n<event>` + event + `</event>\n</task-notification>"}}`
+}
+
 func taskNotification(taskID string) string {
 	return `{"type":"user","message":{"content":"<task-notification>\n<task-id>` + taskID + `</task-id>\n<status>completed</status>\n</task-notification>"}}`
 }
@@ -189,5 +200,36 @@ func TestPendingBackgroundTasks_MissingTranscript(t *testing.T) {
 	}
 	if got := PendingBackgroundTasks(filepath.Join(t.TempDir(), "нет-такого")); got != 0 {
 		t.Errorf("несуществующий транскрипт должен давать 0, насчитано %d", got)
+	}
+}
+
+func TestPendingBackgroundTasks_MonitorAliveThroughEvents(t *testing.T) {
+	var lines []string
+	lines = append(lines, monitorLaunch("toolu_01", "bm0n1t0r")...)
+	if got := PendingBackgroundTasks(writeTranscript(t, lines)); got != 1 {
+		t.Fatalf("монитор запущен, насчитано %d", got)
+	}
+
+	// Событие монитора — не завершение: он продолжает слушать
+	lines = append(lines, monitorEvent("bm0n1t0r", "=== session one"),
+		monitorEvent("bm0n1t0r", "=== session two"))
+	if got := PendingBackgroundTasks(writeTranscript(t, lines)); got != 1 {
+		t.Errorf("после двух событий монитор должен быть жив, насчитано %d", got)
+	}
+
+	// Истёкший таймаут — завершение
+	lines = append(lines, monitorEvent("bm0n1t0r", "[Monitor timed out — re-arm if needed.]"))
+	if got := PendingBackgroundTasks(writeTranscript(t, lines)); got != 0 {
+		t.Errorf("монитор истёк, насчитано %d", got)
+	}
+}
+
+func TestPendingBackgroundTasks_MonitorEndsByStatus(t *testing.T) {
+	var lines []string
+	lines = append(lines, monitorLaunch("toolu_01", "bm0n1t0r")...)
+	lines = append(lines, monitorEvent("bm0n1t0r", "line"))
+	lines = append(lines, taskNotification("bm0n1t0r"))
+	if got := PendingBackgroundTasks(writeTranscript(t, lines)); got != 0 {
+		t.Errorf("монитор завершён со статусом, насчитано %d", got)
 	}
 }
