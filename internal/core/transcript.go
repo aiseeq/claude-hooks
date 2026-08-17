@@ -12,9 +12,13 @@ import (
 // Маркеры фоновых задач в транскрипте сессии Claude Code: результат запуска
 // субагента, результат фоновой bash-команды и уведомление о завершении задачи
 var (
-	agentLaunched = regexp.MustCompile(`(?s)Async agent launched successfully.*?agentId: ([A-Za-z0-9_-]+)`)
-	bashLaunched  = regexp.MustCompile(`Command running in background with ID: ([A-Za-z0-9_-]+)`)
-	taskNotified  = regexp.MustCompile(`<task-id>([A-Za-z0-9_-]+)</task-id>`)
+	agentLaunched   = regexp.MustCompile(`(?s)Async agent launched successfully.*?agentId: ([A-Za-z0-9_-]+)`)
+	bashLaunched    = regexp.MustCompile(`Command running in background with ID: ([A-Za-z0-9_-]+)`)
+	monitorLaunched = regexp.MustCompile(`Monitor started \(task ([A-Za-z0-9_-]+)`)
+	taskNotified    = regexp.MustCompile(`<task-id>([A-Za-z0-9_-]+)</task-id>`)
+	// Уведомление монитора о конце: явный статус либо истёкший таймаут. Все
+	// остальные его уведомления — промежуточные события, монитор после них жив
+	taskFinished = regexp.MustCompile(`<status>|\[Monitor timed out`)
 )
 
 // Задача без отчёта дольше этого срока считается брошенной и уведомления
@@ -71,6 +75,9 @@ func PendingBackgroundTasks(transcriptPath string) int {
 	// Извлечение идентификатора задачи из результата запустившего её вызова
 	launchers := map[string]*regexp.Regexp{}
 	pending := map[string]time.Time{}
+	// Мониторы шлют уведомление на каждое событие, а не только по концу —
+	// вычёркивать их можно лишь по уведомлению с признаком завершения
+	monitors := map[string]bool{}
 
 	scanner := bufio.NewScanner(f)
 	// Записи транскрипта с вложениями бывают на мегабайты
@@ -94,6 +101,8 @@ func PendingBackgroundTasks(transcriptPath string) int {
 					if boolInput(block.Input, "run_in_background") {
 						launchers[block.ID] = bashLaunched
 					}
+				case "Monitor":
+					launchers[block.ID] = monitorLaunched
 				case "TaskStop":
 					// Остановленная задача уведомления уже не пришлёт
 					delete(pending, stringInput(block.Input, "task_id"))
@@ -105,14 +114,14 @@ func PendingBackgroundTasks(transcriptPath string) int {
 			// Уведомление о завершении приходит текстом сообщения
 			var text string
 			if err := json.Unmarshal(record.Message.Content, &text); err == nil {
-				completeNotifiedTasks(pending, text)
+				completeNotifiedTasks(pending, monitors, text)
 				continue
 			}
 
 			for _, block := range contentBlocks(record.Message.Content) {
 				switch block.Type {
 				case "text":
-					completeNotifiedTasks(pending, block.Text)
+					completeNotifiedTasks(pending, monitors, block.Text)
 				case "tool_result":
 					extract, ok := launchers[block.ToolUseID]
 					if !ok {
@@ -121,6 +130,9 @@ func PendingBackgroundTasks(transcriptPath string) int {
 					if m := extract.FindStringSubmatch(flattenContent(block.Content)); m != nil {
 						launched, _ := time.Parse(time.RFC3339, record.Timestamp)
 						pending[m[1]] = launched
+						if extract == monitorLaunched {
+							monitors[m[1]] = true
+						}
 					}
 				}
 			}
@@ -189,12 +201,18 @@ func AwaitingScheduledWakeup(transcriptPath string) bool {
 	return armed && (deadline.IsZero() || time.Now().Before(deadline))
 }
 
-// completeNotifiedTasks вычёркивает задачи, упомянутые в уведомлении о завершении
-func completeNotifiedTasks(pending map[string]time.Time, text string) {
+// completeNotifiedTasks вычёркивает задачи, упомянутые в уведомлении о завершении.
+// Уведомление монитора считается завершением только с признаком конца:
+// событие монитора приходит тем же уведомлением, но монитор после него жив
+func completeNotifiedTasks(pending map[string]time.Time, monitors map[string]bool, text string) {
 	if !strings.Contains(text, "<task-notification>") {
 		return
 	}
+	finished := taskFinished.MatchString(text)
 	for _, m := range taskNotified.FindAllStringSubmatch(text, -1) {
+		if monitors[m[1]] && !finished {
+			continue
+		}
 		delete(pending, m[1])
 	}
 }
