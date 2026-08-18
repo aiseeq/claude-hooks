@@ -1,6 +1,7 @@
 package desktop
 
 import (
+	"fmt"
 	"os"
 	"strconv"
 	"strings"
@@ -12,8 +13,10 @@ const maxAncestors = 16
 
 // ProcessAncestors возвращает PID процесса и всех его предков, начиная с самого процесса.
 // Окно терминала принадлежит одному из них: какому именно — решает оконный менеджер,
-// поэтому список передаётся целиком и не требует знания конкретных эмуляторов терминала
-func ProcessAncestors(pid int) []int {
+// поэтому список передаётся целиком и не требует знания конкретных эмуляторов терминала.
+// Если цепочка оборвалась на нечитаемом процессе, возвращается собранная часть
+// вместе с ошибкой: окно может принадлежать и ей
+func ProcessAncestors(pid int) ([]int, error) {
 	ancestors := make([]int, 0, maxAncestors)
 	seen := make(map[int]bool, maxAncestors)
 
@@ -21,21 +24,22 @@ func ProcessAncestors(pid int) []int {
 		seen[pid] = true
 		ancestors = append(ancestors, pid)
 
-		parent, ok := parentPID(pid)
-		if !ok {
-			break
+		parent, err := parentPID(pid)
+		if err != nil {
+			return ancestors, err
 		}
 		pid = parent
 	}
 
-	return ancestors
+	return ancestors, nil
 }
 
 // parentPID читает PPid процесса из /proc/<pid>/stat
-func parentPID(pid int) (int, bool) {
-	data, err := os.ReadFile("/proc/" + strconv.Itoa(pid) + "/stat")
+func parentPID(pid int) (int, error) {
+	statPath := "/proc/" + strconv.Itoa(pid) + "/stat"
+	data, err := os.ReadFile(statPath)
 	if err != nil {
-		return 0, false
+		return 0, fmt.Errorf("cannot read %s: %w", statPath, err)
 	}
 
 	// Формат: pid (comm) state ppid ... — comm может содержать пробелы и скобки,
@@ -43,18 +47,18 @@ func parentPID(pid int) (int, bool) {
 	stat := string(data)
 	end := strings.LastIndex(stat, ")")
 	if end == -1 || end+2 >= len(stat) {
-		return 0, false
+		return 0, fmt.Errorf("unexpected format of %s: %q", statPath, stat)
 	}
 
 	fields := strings.Fields(stat[end+2:])
 	if len(fields) < 2 {
-		return 0, false
+		return 0, fmt.Errorf("unexpected format of %s: %q", statPath, stat)
 	}
 
 	parent, err := strconv.Atoi(fields[1])
 	if err != nil {
-		return 0, false
+		return 0, fmt.Errorf("unexpected ppid in %s: %w", statPath, err)
 	}
 
-	return parent, true
+	return parent, nil
 }

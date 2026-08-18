@@ -49,7 +49,7 @@ func NewJiraStyleTool(config core.ToolConfig, logger core.Logger) (*JiraStyleToo
 }
 
 // ValidateTool проверяет команду, постящую комментарий в Jira
-func (t *JiraStyleTool) ValidateTool(ctx context.Context, input *core.ToolInput) (*core.ValidationResult, error) {
+func (t *JiraStyleTool) ValidateTool(_ context.Context, input *core.ToolInput) (*core.ValidationResult, error) {
 	if !t.IsEnabled() || input.ToolName != "Bash" || input.Command == "" {
 		return &core.ValidationResult{IsValid: true}, nil
 	}
@@ -61,9 +61,14 @@ func (t *JiraStyleTool) ValidateTool(ctx context.Context, input *core.ToolInput)
 	texts := []string{input.Command}
 	for _, m := range jiraPayloadFile.FindAllStringSubmatch(input.Command, -1) {
 		path := m[1] + m[2] + m[3]
-		if body, ok := readPayloadFile(path); ok {
-			texts = append(texts, body)
+		body, err := readPayloadFile(path)
+		if err != nil {
+			// Тело запроса — лишь дополнительный источник текста: команда
+			// проверяется и без него, а причина пропуска остаётся в логе
+			t.Logger().Debug("jira payload file skipped", "path", path, "error", err)
+			continue
 		}
+		texts = append(texts, body)
 	}
 
 	var violations []core.Violation
@@ -72,39 +77,50 @@ func (t *JiraStyleTool) ValidateTool(ctx context.Context, input *core.ToolInput)
 			if !marker.regexp.MatchString(text) {
 				continue
 			}
-			violations = append(violations, core.Violation{
-				Type:       "jira_comment_style",
-				Message:    fmt.Sprintf("В комментарии для Jira %s — признак текста мимо правил write-as-user", marker.description),
-				Suggestion: "Перепиши комментарий по скиллу write-as-user: без длинных тире, без markdown, разговорным текстом",
-				Severity:   core.LevelCritical,
-				Line:       1,
-			})
+			violations = append(violations, core.NewViolation(
+				"jira_comment_style",
+				fmt.Sprintf("В комментарии для Jira %s — признак текста мимо правил write-as-user", marker.description),
+				"Перепиши комментарий по скиллу write-as-user: без длинных тире, без markdown, разговорным текстом",
+				core.LevelCritical,
+				1,
+				0,
+			))
 			break
 		}
 	}
 
-	return &core.ValidationResult{
-		IsValid:    len(violations) == 0,
-		Violations: violations,
-	}, nil
+	// nil-di: safe — подсказка уже в каждом нарушении, отдельного списка нет
+	return core.NewValidationResult(len(violations) == 0, violations, nil), nil
 }
 
-// readPayloadFile читает файл с телом запроса, пропуская несуществующие и большие
-func readPayloadFile(path string) (string, bool) {
+// readPayloadFile читает файл с телом запроса. Ошибка называет причину, по
+// которой файл не годится: stdin вместо файла, каталог, слишком большой,
+// нечитаемый
+func readPayloadFile(path string) (string, error) {
 	path = strings.TrimSpace(path)
 	if path == "" || path == "-" {
-		return "", false
+		return "", fmt.Errorf("payload comes from stdin, not a file")
 	}
-	if home, err := os.UserHomeDir(); err == nil && strings.HasPrefix(path, "~/") {
+	if strings.HasPrefix(path, "~/") {
+		home, err := os.UserHomeDir()
+		if err != nil {
+			return "", fmt.Errorf("cannot expand ~ in %q: %w", path, err)
+		}
 		path = home + path[1:]
 	}
 	info, err := os.Stat(path)
-	if err != nil || info.IsDir() || info.Size() > maxPayloadFileSize {
-		return "", false
+	if err != nil {
+		return "", err
+	}
+	if info.IsDir() {
+		return "", fmt.Errorf("%s is a directory", path)
+	}
+	if info.Size() > maxPayloadFileSize {
+		return "", fmt.Errorf("%s is %d bytes, larger than %d", path, info.Size(), maxPayloadFileSize)
 	}
 	data, err := os.ReadFile(path)
 	if err != nil {
-		return "", false
+		return "", err
 	}
-	return string(data), true
+	return string(data), nil
 }

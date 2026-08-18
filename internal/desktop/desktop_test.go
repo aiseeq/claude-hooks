@@ -7,7 +7,10 @@ import (
 )
 
 func TestProcessAncestors(t *testing.T) {
-	ancestors := ProcessAncestors(os.Getpid())
+	ancestors, err := ProcessAncestors(os.Getpid())
+	if err != nil {
+		t.Fatalf("цепочка живого процесса должна читаться целиком: %v", err)
+	}
 
 	if len(ancestors) == 0 {
 		t.Fatal("список предков не должен быть пустым")
@@ -29,8 +32,13 @@ func TestProcessAncestors(t *testing.T) {
 }
 
 func TestProcessAncestors_UnknownProcess(t *testing.T) {
-	// PID заведомо за пределами диапазона: цепочка обрывается без паники
-	if got := ProcessAncestors(1 << 30); len(got) > 1 {
+	// PID заведомо за пределами диапазона: цепочка обрывается без паники,
+	// а обрыв виден по ошибке
+	got, err := ProcessAncestors(1 << 30)
+	if err == nil {
+		t.Error("для несуществующего процесса ожидалась ошибка чтения /proc")
+	}
+	if len(got) > 1 {
 		t.Errorf("для несуществующего процесса ожидался обрыв цепочки, получено %v", got)
 	}
 }
@@ -80,7 +88,10 @@ func TestIntsRoundTrip(t *testing.T) {
 		t.Errorf("получено %q", encoded)
 	}
 
-	decoded := ParseInts(encoded)
+	decoded, err := ParseInts(encoded)
+	if err != nil {
+		t.Fatalf("ParseInts(%q): %v", encoded, err)
+	}
 	if len(decoded) != len(values) {
 		t.Fatalf("получено %v, ожидалось %v", decoded, values)
 	}
@@ -91,11 +102,15 @@ func TestIntsRoundTrip(t *testing.T) {
 	}
 }
 
-func TestParseInts_IgnoresGarbage(t *testing.T) {
-	if got := ParseInts("1, x, 3"); len(got) != 2 || got[0] != 1 || got[1] != 3 {
-		t.Errorf("нечисловые элементы должны пропускаться, получено %v", got)
+func TestParseInts_RejectsGarbage(t *testing.T) {
+	if got, err := ParseInts("1, x, 3"); err == nil {
+		t.Errorf("нечисловой элемент должен давать ошибку, получено %v", got)
 	}
-	if got := ParseInts(""); got != nil {
+	got, err := ParseInts("")
+	if err != nil {
+		t.Errorf("пустая строка не ошибка: %v", err)
+	}
+	if got != nil {
 		t.Errorf("пустая строка даёт пустой список, получено %v", got)
 	}
 }

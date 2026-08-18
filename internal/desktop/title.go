@@ -24,45 +24,51 @@ const (
 // Konsole собирает заголовок по шаблону («%d : %n» по умолчанию) и escape-
 // последовательность OSC при этом игнорирует, поэтому шаблон заменяется целиком
 // через D-Bus. Для прочих терминалов остаётся OSC — его понимают почти все.
-// Ошибки не возвращаются: заголовок окна не повод ломать работу хука
-func SetTerminalTitle(title string) {
+// Ошибка означает, что заголовок Konsole поставить не удалось; работу хука
+// это не останавливает — решает вызывающий
+func SetTerminalTitle(title string) error {
 	title = sanitizeTitle(title)
 	if title == "" {
-		return
+		return nil
 	}
 
-	if setKonsoleTitle(title) {
-		return
+	if service, session, ok := konsoleSession(); ok {
+		return setKonsoleTitle(service, session, title)
 	}
 
 	// Заголовок ставится через stderr: stdout у хука и строки статуса занят данными
 	fmt.Fprintf(os.Stderr, "\033]0;%s\007", title)
+	return nil
 }
 
-// setKonsoleTitle задаёт заголовок сессии Konsole и сообщает, удалось ли это
-func setKonsoleTitle(title string) bool {
-	service := os.Getenv("KONSOLE_DBUS_SERVICE")
-	session := os.Getenv("KONSOLE_DBUS_SESSION")
-	if service == "" || session == "" {
-		return false
-	}
+// konsoleSession сообщает адрес D-Bus сессии Konsole, из которой запущен
+// процесс, если это Konsole
+func konsoleSession() (service, session string, ok bool) {
+	service = os.Getenv("KONSOLE_DBUS_SERVICE")
+	session = os.Getenv("KONSOLE_DBUS_SESSION")
+	return service, session, service != "" && session != ""
+}
 
+// setKonsoleTitle задаёт заголовок сессии Konsole через D-Bus
+func setKonsoleTitle(service, session, title string) error {
 	conn, err := dbus.SessionBus()
 	if err != nil {
-		return false
+		return fmt.Errorf("session bus unavailable: %w", err)
 	}
 
 	object := conn.Object(service, dbus.ObjectPath(session))
 
-	// Шаблон переживает перерисовку заголовка, но применяется не сразу:
+	// Шаблон переживёт перерисовку заголовка, но применяется не сразу:
 	// Konsole пересобирает заголовок по событиям сессии. Поэтому текущий
 	// заголовок задаётся ещё и напрямую
 	if call := object.Call(konsoleSessionIface+".setTabTitleFormat", 0, konsoleLocalTab, title); call.Err != nil {
-		return false
+		return fmt.Errorf("konsole setTabTitleFormat: %w", call.Err)
 	}
-	object.Call(konsoleSessionIface+".setTitle", 0, konsoleDisplayedTitle, title)
+	if call := object.Call(konsoleSessionIface+".setTitle", 0, konsoleDisplayedTitle, title); call.Err != nil {
+		return fmt.Errorf("konsole setTitle: %w", call.Err)
+	}
 
-	return true
+	return nil
 }
 
 // sanitizeTitle убирает из заголовка то, что исказит его при выводе:

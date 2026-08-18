@@ -26,7 +26,7 @@ func TestMatchPath(t *testing.T) {
 }
 
 func TestIsExceptionFile(t *testing.T) {
-	logger := NewTestLogger()
+	logger := testLogger(t)
 	exceptions := []string{"*.generated.go", "/vendor/"}
 
 	tests := []struct {

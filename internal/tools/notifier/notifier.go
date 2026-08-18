@@ -22,17 +22,17 @@ const (
 	notificationTimeout = 30 * time.Second
 )
 
-// NotifierTool уведомляет о завершении работы и о вопросах Claude Code
-type NotifierTool struct {
+// Tool уведомляет о завершении работы и о вопросах Claude Code
+type Tool struct {
 	*tools.BaseTool
 	sound           bool
 	desktop         bool
 	activateOnClick bool
 }
 
-// NewNotifierTool создает инструмент уведомлений
-func NewNotifierTool(config core.ToolConfig, logger core.Logger) (*NotifierTool, error) {
-	return &NotifierTool{
+// New создает инструмент уведомлений
+func New(config core.ToolConfig, logger core.Logger) (*Tool, error) {
+	return &Tool{
 		BaseTool:        tools.NewBaseTool("notifier", config.Enabled, []string{core.EventStop, core.EventNotification}, logger),
 		sound:           config.Sound,
 		desktop:         config.Desktop,
@@ -41,7 +41,7 @@ func NewNotifierTool(config core.ToolConfig, logger core.Logger) (*NotifierTool,
 }
 
 // ValidateTool обрабатывает события сессии: завершение работы и запрос к пользователю
-func (t *NotifierTool) ValidateTool(ctx context.Context, input *core.ToolInput) (*core.ValidationResult, error) {
+func (t *Tool) ValidateTool(ctx context.Context, input *core.ToolInput) (*core.ValidationResult, error) {
 	if !t.IsEnabled() {
 		return &core.ValidationResult{IsValid: true}, nil
 	}
@@ -53,8 +53,11 @@ func (t *NotifierTool) ValidateTool(ctx context.Context, input *core.ToolInput) 
 		return &core.ValidationResult{IsValid: true}, nil
 	}
 
-	// Заголовок окна — подсказка в списке окон и в панели задач
-	desktop.SetTerminalTitle(terminalTitle)
+	// Заголовок окна — подсказка в списке окон и в панели задач; без него
+	// уведомление всё равно уходит
+	if err := desktop.SetTerminalTitle(terminalTitle); err != nil {
+		t.Logger().Warn("terminal title not set", "error", err)
+	}
 
 	// Пока Claude ждёт, Claude Code напоминает о себе тем же событием.
 	// Человека уже позвали один раз, и повторный звонок только отвлекает:
@@ -93,7 +96,7 @@ func (t *NotifierTool) ValidateTool(ctx context.Context, input *core.ToolInput) 
 }
 
 // buildAlert собирает оповещение под конкретное событие
-func (t *NotifierTool) buildAlert(input *core.ToolInput, projectName string) (desktop.Alert, string, bool) {
+func (t *Tool) buildAlert(input *core.ToolInput, projectName string) (desktop.Alert, string, bool) {
 	alert := desktop.Alert{
 		AppName:     "Claude Code",
 		Icon:        "utilities-terminal",
@@ -103,8 +106,13 @@ func (t *NotifierTool) buildAlert(input *core.ToolInput, projectName string) (de
 	}
 
 	if t.activateOnClick {
-		// Окно принадлежит одному из предков: сам хук окна не имеет
-		alert.ActivatePIDs = desktop.ProcessAncestors(os.Getpid())
+		// Окно принадлежит одному из предков: сам хук окна не имеет. Оборванная
+		// цепочка всё равно годится — окно может быть у собранной части
+		ancestors, err := desktop.ProcessAncestors(os.Getpid())
+		if err != nil {
+			t.Logger().Warn("process ancestry incomplete", "error", err)
+		}
+		alert.ActivatePIDs = ancestors
 	}
 
 	var terminalTitle string
@@ -142,7 +150,7 @@ func IsIdleReminder(message string) bool {
 
 // ProjectName определяет имя проекта: рабочая директория сессии — самый надёжный
 // источник, путь транскрипта используется как запасной вариант
-func (t *NotifierTool) ProjectName(input *core.ToolInput) string {
+func (t *Tool) ProjectName(input *core.ToolInput) string {
 	if input.CWD != "" {
 		return core.ProjectNameForDir(input.CWD)
 	}
@@ -199,7 +207,7 @@ func decodeProjectDir(encoded string) string {
 			continue
 		}
 
-		// Каталог мог быть удалён или переименован: считаем дефис разделителем
+		// Каталога с таким именем нет (снесён или переименован): считаем дефис разделителем
 		path = nested
 	}
 

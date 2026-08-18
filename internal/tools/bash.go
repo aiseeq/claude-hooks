@@ -88,7 +88,7 @@ func NewBashTool(config core.ToolConfig, logger core.Logger) (*BashTool, error) 
 }
 
 // ValidateTool проверяет bash-команду на опасные паттерны
-func (t *BashTool) ValidateTool(ctx context.Context, input *core.ToolInput) (*core.ValidationResult, error) {
+func (t *BashTool) ValidateTool(_ context.Context, input *core.ToolInput) (*core.ValidationResult, error) {
 	if !t.IsEnabled() || input.ToolName != "Bash" || input.Command == "" {
 		return &core.ValidationResult{IsValid: true}, nil
 	}
@@ -108,14 +108,14 @@ func (t *BashTool) ValidateTool(ctx context.Context, input *core.ToolInput) (*co
 			message = fmt.Sprintf("Опасная bash-команда (%s): %q", pattern.description, matched)
 		}
 
-		violations = append(violations, core.Violation{
-			Type:       "dangerous_bash_command",
-			Message:    message,
-			Suggestion: "Укажи конкретный путь вместо корневого или убери опасный флаг",
-			Severity:   core.LevelCritical,
-			Line:       1,
-			Column:     loc[0] + 1,
-		})
+		violations = append(violations, core.NewViolation(
+			"dangerous_bash_command",
+			message,
+			"Укажи конкретный путь вместо корневого или убери опасный флаг",
+			core.LevelCritical,
+			1,
+			loc[0]+1,
+		))
 	}
 
 	return &core.ValidationResult{

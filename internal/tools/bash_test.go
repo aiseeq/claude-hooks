@@ -10,7 +10,7 @@ import (
 func newBashTool(t *testing.T, config core.ToolConfig) *BashTool {
 	t.Helper()
 
-	tool, err := NewBashTool(config, core.NewTestLogger())
+	tool, err := NewBashTool(config, testLogger(t))
 	if err != nil {
 		t.Fatalf("failed to create tool: %v", err)
 	}
@@ -99,7 +99,7 @@ func TestBashTool_InvalidPattern(t *testing.T) {
 	_, err := NewBashTool(core.ToolConfig{
 		Enabled:         true,
 		BlockedPatterns: []string{"([a-z"},
-	}, core.NewTestLogger())
+	}, testLogger(t))
 
 	if err == nil {
 		t.Error("некорректный regex должен приводить к ошибке создания инструмента")
@@ -134,4 +134,15 @@ func TestBashTool_IgnoresNonBashTools(t *testing.T) {
 	if !result.IsValid {
 		t.Error("инструмент должен обрабатывать только Bash")
 	}
+}
+
+// testLogger — логгер для тестов пакета: пишет в stderr, который go test
+// показывает только при провале
+func testLogger(t *testing.T) core.Logger {
+	t.Helper()
+	logger, err := core.NewLogger(core.LoggerConfig{Level: "debug"})
+	if err != nil {
+		t.Fatalf("не удалось создать логгер: %v", err)
+	}
+	return logger
 }

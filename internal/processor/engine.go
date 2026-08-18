@@ -3,6 +3,7 @@ package processor
 import (
 	"context"
 	"fmt"
+	"slices"
 	"time"
 
 	"github.com/aiseeq/claude-hooks/internal/core"
@@ -90,7 +91,7 @@ func (e *Engine) initTools(config *core.Config) error {
 			return tools.NewJiraStyleTool(c, l)
 		}},
 		{"notifier", func(c core.ToolConfig, l core.Logger) (core.ToolValidator, error) {
-			return notifier.NewNotifierTool(c, l)
+			return notifier.New(c, l)
 		}},
 	}
 
@@ -241,12 +242,7 @@ func (e *Engine) buildResponse(violations []core.Violation, suggestions []string
 
 // supportsOperation проверяет поддерживает ли инструмент операцию
 func supportsOperation(tool core.ToolValidator, toolName string) bool {
-	for _, supported := range tool.SupportedTools() {
-		if supported == toolName {
-			return true
-		}
-	}
-	return false
+	return slices.Contains(tool.SupportedTools(), toolName)
 }
 
 // highestLevel возвращает максимальный уровень серьезности среди нарушений

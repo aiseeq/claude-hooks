@@ -40,7 +40,7 @@ func NewRuntimeExitValidator(config core.ValidatorConfig, logger core.Logger) (*
 }
 
 // Validate выполняет валидацию файла
-func (v *RuntimeExitValidator) Validate(ctx context.Context, file *core.FileAnalysis) (*core.ValidationResult, error) {
+func (v *RuntimeExitValidator) Validate(_ context.Context, file *core.FileAnalysis) (*core.ValidationResult, error) {
 	if !v.IsEnabled() {
 		return &core.ValidationResult{IsValid: true}, nil
 	}
@@ -75,11 +75,7 @@ func (v *RuntimeExitValidator) Validate(ctx context.Context, file *core.FileAnal
 
 	v.logger.Info("runtime exit usage detected", "file", file.Path, "violations", len(violations))
 
-	return &core.ValidationResult{
-		IsValid:     false,
-		Violations:  violations,
-		Suggestions: v.suggestions(file),
-	}, nil
+	return core.NewValidationResult(false, violations, v.suggestions(file)), nil
 }
 
 // determineViolationType определяет тип нарушения по тексту совпадения

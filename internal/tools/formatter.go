@@ -66,23 +66,21 @@ func (t *FormatterTool) ValidateTool(ctx context.Context, input *core.ToolInput)
 		switch {
 		case err != nil:
 			t.Logger().Warn("formatting failed", "file", input.FilePath, "formatter", f.command, "error", err)
-			violations = append(violations, core.Violation{
-				Type:       "format_error",
-				Message:    fmt.Sprintf("%s не смог отформатировать файл: %v", f.command, err),
-				Suggestion: "Проверь синтаксис файла",
-				Severity:   core.LevelWarning,
-			})
+			violations = append(violations, core.NewViolation(
+				"format_error",
+				fmt.Sprintf("%s не смог отформатировать файл: %v", f.command, err),
+				"Проверь синтаксис файла",
+				core.LevelWarning,
+				0,
+				0,
+			))
 		case formatted:
 			suggestions = append(suggestions, fmt.Sprintf("Файл отформатирован через %s", f.command))
 		}
 	}
 
 	// Форматирование не блокирует операцию: файл уже записан
-	return &core.ValidationResult{
-		IsValid:     true,
-		Violations:  violations,
-		Suggestions: suggestions,
-	}, nil
+	return core.NewValidationResult(true, violations, suggestions), nil
 }
 
 // run запускает форматтер. Возвращает false если инструмент не установлен

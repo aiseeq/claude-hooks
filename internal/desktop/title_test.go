@@ -25,12 +25,22 @@ func TestSanitizeTitle(t *testing.T) {
 	}
 }
 
-func TestSetKonsoleTitleWithoutKonsole(t *testing.T) {
+func TestKonsoleSessionWithoutKonsole(t *testing.T) {
 	// Вне Konsole нужен запасной путь через OSC, а не попытка вызова D-Bus
 	t.Setenv("KONSOLE_DBUS_SERVICE", "")
 	t.Setenv("KONSOLE_DBUS_SESSION", "")
 
-	if setKonsoleTitle("DEMO") {
-		t.Error("без переменных Konsole заголовок не может быть установлен через D-Bus")
+	if _, _, ok := konsoleSession(); ok {
+		t.Error("без переменных Konsole сессия Konsole распознаваться не должна")
+	}
+}
+
+func TestKonsoleSessionDetected(t *testing.T) {
+	t.Setenv("KONSOLE_DBUS_SERVICE", "org.kde.konsole-123")
+	t.Setenv("KONSOLE_DBUS_SESSION", "/Sessions/1")
+
+	service, session, ok := konsoleSession()
+	if !ok || service != "org.kde.konsole-123" || session != "/Sessions/1" {
+		t.Errorf("сессия Konsole должна читаться из окружения, получено %q %q %v", service, session, ok)
 	}
 }

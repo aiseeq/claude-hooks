@@ -57,7 +57,10 @@ type ToolConfig struct {
 // хук вызывается часто и параллельно, поэтому побочные эффекты здесь недопустимы
 func LoadConfig(configPath string) (*Config, error) {
 	if configPath == "" {
-		configPath = DefaultConfigPath()
+		var err error
+		if configPath, err = DefaultConfigPath(); err != nil {
+			return nil, err
+		}
 	}
 
 	data, err := os.ReadFile(configPath)
@@ -79,7 +82,9 @@ func LoadConfig(configPath string) (*Config, error) {
 	}
 
 	applyLoggerDefaults(&config.Logger)
-	expandConfigPaths(&config)
+	if err := expandConfigPaths(&config); err != nil {
+		return nil, fmt.Errorf("failed to expand paths in %s: %w", configPath, err)
+	}
 
 	if err := validateConfig(&config); err != nil {
 		return nil, fmt.Errorf("config validation failed in %s: %w", configPath, err)
@@ -172,12 +177,12 @@ func validateConfig(config *Config) error {
 }
 
 // DefaultConfigPath возвращает путь к конфигурации по умолчанию
-func DefaultConfigPath() string {
+func DefaultConfigPath() (string, error) {
 	homeDir, err := os.UserHomeDir()
 	if err != nil {
-		return filepath.Join(".claude", "hooks", "config.yaml")
+		return "", fmt.Errorf("failed to resolve default config path: %w", err)
 	}
-	return filepath.Join(homeDir, ".claude", "hooks", "config.yaml")
+	return filepath.Join(homeDir, ".claude", "hooks", "config.yaml"), nil
 }
 
 // containsFold проверяет содержится ли элемент в слайсе без учета регистра
@@ -191,18 +196,23 @@ func containsFold(slice []string, item string) bool {
 }
 
 // expandPath раскрывает ~ в пути к домашней директории
-func expandPath(path string) string {
+func expandPath(path string) (string, error) {
 	if !strings.HasPrefix(path, "~/") {
-		return path
+		return path, nil
 	}
 	homeDir, err := os.UserHomeDir()
 	if err != nil {
-		return path
+		return "", fmt.Errorf("cannot expand ~ in %q: %w", path, err)
 	}
-	return filepath.Join(homeDir, path[2:])
+	return filepath.Join(homeDir, path[2:]), nil
 }
 
 // expandConfigPaths применяет expandPath ко всем путям в конфигурации
-func expandConfigPaths(config *Config) {
-	config.Logger.LogFile = expandPath(config.Logger.LogFile)
+func expandConfigPaths(config *Config) error {
+	logFile, err := expandPath(config.Logger.LogFile)
+	if err != nil {
+		return err
+	}
+	config.Logger.LogFile = logFile
+	return nil
 }

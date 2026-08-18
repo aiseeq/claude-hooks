@@ -13,22 +13,24 @@ func ParseToolInput(data []byte) (*ToolInput, error) {
 		return nil, fmt.Errorf("failed to parse tool input: %w", err)
 	}
 
-	extractToolSpecificData(&input)
+	if err := extractToolSpecificData(&input); err != nil {
+		return nil, fmt.Errorf("failed to parse tool_input of %s: %w", input.ToolName, err)
+	}
 
 	return &input, nil
 }
 
 // extractToolSpecificData извлекает данные специфичные для каждого типа инструмента.
-// Отсутствие или нераспознанный формат tool_input не является ошибкой: часть хуков
-// (например Stop) приходит без него
-func extractToolSpecificData(input *ToolInput) {
+// Отсутствие tool_input не является ошибкой: часть хуков (например Stop)
+// приходит без него; присутствующий, но нечитаемый tool_input — ошибка
+func extractToolSpecificData(input *ToolInput) error {
 	if len(input.ToolInput) == 0 {
-		return
+		return nil
 	}
 
-	toolData := decodeToolInput(input.ToolInput)
-	if toolData == nil {
-		return
+	toolData, err := decodeToolInput(input.ToolInput)
+	if err != nil {
+		return err
 	}
 
 	switch input.ToolName {
@@ -42,39 +44,48 @@ func extractToolSpecificData(input *ToolInput) {
 
 	case "MultiEdit":
 		input.FilePath = stringField(toolData, "file_path")
-		// Для MultiEdit объединяем все new_string из массива edits
-		if edits, ok := toolData["edits"].([]any); ok {
-			var allNewStrings []string
-			for _, edit := range edits {
-				if editMap, ok := edit.(map[string]any); ok {
-					if newString := stringField(editMap, "new_string"); newString != "" {
-						allNewStrings = append(allNewStrings, newString)
-					}
-				}
-			}
-			input.NewString = strings.Join(allNewStrings, "\n")
-		}
+		input.NewString = joinEditStrings(toolData["edits"])
 
 	case "Bash":
 		input.Command = stringField(toolData, "command")
 	}
+	return nil
 }
 
 // decodeToolInput разбирает tool_input: объект либо JSON-строка с объектом внутри
-func decodeToolInput(raw json.RawMessage) map[string]any {
+func decodeToolInput(raw json.RawMessage) (map[string]any, error) {
 	var toolData map[string]any
 	if err := json.Unmarshal(raw, &toolData); err == nil {
-		return toolData
+		return toolData, nil
 	}
 
 	var nested string
 	if err := json.Unmarshal(raw, &nested); err != nil {
-		return nil
+		return nil, fmt.Errorf("tool_input is neither an object nor a string: %w", err)
 	}
 	if err := json.Unmarshal([]byte(nested), &toolData); err != nil {
-		return nil
+		return nil, fmt.Errorf("tool_input string does not contain a JSON object: %w", err)
 	}
-	return toolData
+	return toolData, nil
+}
+
+// joinEditStrings объединяет все new_string из массива edits инструмента MultiEdit
+func joinEditStrings(edits any) string {
+	list, ok := edits.([]any)
+	if !ok {
+		return ""
+	}
+	var allNewStrings []string
+	for _, edit := range list {
+		editMap, ok := edit.(map[string]any)
+		if !ok {
+			continue
+		}
+		if newString := stringField(editMap, "new_string"); newString != "" {
+			allNewStrings = append(allNewStrings, newString)
+		}
+	}
+	return strings.Join(allNewStrings, "\n")
 }
 
 // stringField извлекает строковое поле из распарсенного tool_input

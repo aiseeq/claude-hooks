@@ -8,9 +8,19 @@ import (
 	"testing"
 )
 
+// gitStatus читает статус репозитория и проваливает тест на ошибке git
+func gitStatus(t *testing.T, ctx context.Context, dir string) GitStatus {
+	t.Helper()
+	status, err := ReadGitStatus(ctx, dir)
+	if err != nil {
+		t.Fatalf("ReadGitStatus(%s): %v", dir, err)
+	}
+	return status
+}
+
 func TestReadGitStatusOutsideRepo(t *testing.T) {
 	// Каталог без репозитория: строка статуса просто не показывает ветку
-	status := ReadGitStatus(context.Background(), t.TempDir())
+	status := gitStatus(t, context.Background(), t.TempDir())
 	if status.IsRepo {
 		t.Errorf("каталог без репозитория помечен как репозиторий: %+v", status)
 	}
@@ -19,7 +29,7 @@ func TestReadGitStatusOutsideRepo(t *testing.T) {
 func TestReadGitStatusReportsBranchAndChanges(t *testing.T) {
 	repo := initRepo(t)
 
-	status := ReadGitStatus(context.Background(), repo)
+	status := gitStatus(t, context.Background(), repo)
 	if !status.IsRepo {
 		t.Fatal("репозиторий не распознан")
 	}
@@ -32,7 +42,7 @@ func TestReadGitStatusReportsBranchAndChanges(t *testing.T) {
 
 	writeFile(t, filepath.Join(repo, "file.txt"), "изменение")
 
-	status = ReadGitStatus(context.Background(), repo)
+	status = gitStatus(t, context.Background(), repo)
 	if status.Changed != 1 || status.RepoClean {
 		t.Errorf("изменение файла не учтено: %+v", status)
 	}
@@ -44,7 +54,7 @@ func TestReadGitStatusIgnoresUntrackedFiles(t *testing.T) {
 	repo := initRepo(t)
 	writeFile(t, filepath.Join(repo, "новый.txt"), "содержимое")
 
-	if status := ReadGitStatus(context.Background(), repo); status.Changed != 0 {
+	if status := gitStatus(t, context.Background(), repo); status.Changed != 0 {
 		t.Errorf("неотслеживаемый файл попал в счётчик изменений: %+v", status)
 	}
 }

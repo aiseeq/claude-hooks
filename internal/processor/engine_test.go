@@ -12,7 +12,7 @@ import (
 func newEngine(t *testing.T, config *core.Config) *Engine {
 	t.Helper()
 
-	engine, err := New(config, core.NewTestLogger())
+	engine, err := New(config, testLogger(t))
 	if err != nil {
 		t.Fatalf("не удалось создать процессор: %v", err)
 	}
@@ -236,4 +236,15 @@ func TestDeduplicate(t *testing.T) {
 			t.Errorf("позиция %d: получено %q, ожидалось %q", i, got[i], expected[i])
 		}
 	}
+}
+
+// testLogger — логгер для тестов пакета: пишет в stderr, который go test
+// показывает только при провале
+func testLogger(t *testing.T) core.Logger {
+	t.Helper()
+	logger, err := core.NewLogger(core.LoggerConfig{Level: "debug"})
+	if err != nil {
+		t.Fatalf("не удалось создать логгер: %v", err)
+	}
+	return logger
 }

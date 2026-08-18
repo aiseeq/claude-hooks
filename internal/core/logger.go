@@ -118,7 +118,10 @@ func openLogWriter(config LoggerConfig) (io.Writer, error) {
 		if err := os.MkdirAll(filepath.Dir(config.LogFile), 0o755); err != nil {
 			return nil, fmt.Errorf("failed to create log directory: %w", err)
 		}
-		rotateLogIfNeeded(config.LogFile, config.MaxSizeMB)
+		// Неудавшаяся ротация логирование не останавливает: лог просто растёт дальше
+		if err := rotateLogIfNeeded(config.LogFile, config.MaxSizeMB); err != nil {
+			fmt.Fprintf(os.Stderr, "claude-hooks: log rotation failed: %v\n", err)
+		}
 
 		file, err := os.OpenFile(config.LogFile, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644)
 		if err != nil {
@@ -131,18 +134,27 @@ func openLogWriter(config LoggerConfig) (io.Writer, error) {
 }
 
 // rotateLogIfNeeded переименовывает лог в *.1 при превышении порога размера.
-// Ошибки ротации игнорируются намеренно: логирование не должно ломать работу хука
-func rotateLogIfNeeded(logFile string, maxSizeMB int) {
+// Отсутствующий лог ротации не требует
+func rotateLogIfNeeded(logFile string, maxSizeMB int) error {
 	if maxSizeMB <= 0 {
-		return
+		return nil
 	}
 
 	info, err := os.Stat(logFile)
-	if err != nil || info.Size() < int64(maxSizeMB)*1024*1024 {
-		return
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil
+		}
+		return fmt.Errorf("cannot stat %s: %w", logFile, err)
+	}
+	if info.Size() < int64(maxSizeMB)*1024*1024 {
+		return nil
 	}
 
-	_ = os.Rename(logFile, logFile+".1")
+	if err := os.Rename(logFile, logFile+".1"); err != nil {
+		return fmt.Errorf("cannot rename %s: %w", logFile, err)
+	}
+	return nil
 }
 
 // Debug логирует сообщение уровня debug

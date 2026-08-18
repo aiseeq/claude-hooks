@@ -2,6 +2,8 @@ package core
 
 import (
 	"context"
+	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -43,49 +45,55 @@ func PreviousStateFromContext(ctx context.Context) SessionState {
 	return state
 }
 
-// SaveSessionState запоминает состояние сессии.
-// Ошибки не возвращаются: строка статуса — не повод ломать работу хука
-func SaveSessionState(sessionID string, state SessionState) {
+// SaveSessionState запоминает состояние сессии и попутно вычищает записи
+// давно завершившихся сессий. Пустой идентификатор — событие без сессии,
+// запоминать нечего
+func SaveSessionState(sessionID string, state SessionState) error {
 	if sessionID == "" {
-		return
+		return nil
 	}
 
 	path, err := sessionStatePath(sessionID)
 	if err != nil {
-		return
+		return err
 	}
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
-		return
+		return fmt.Errorf("cannot create session state dir: %w", err)
 	}
 
-	_ = os.WriteFile(path, []byte(state), 0o644)
-	cleanupStaleStates(filepath.Dir(path))
+	if err := os.WriteFile(path, []byte(state), 0o644); err != nil {
+		return fmt.Errorf("cannot write session state: %w", err)
+	}
+	return cleanupStaleStates(filepath.Dir(path))
 }
 
 // LoadSessionState читает состояние сессии. Для неизвестной сессии
 // возвращается StateWorking: раз хук ещё не отработал, работа идёт
-func LoadSessionState(sessionID string) SessionState {
+func LoadSessionState(sessionID string) (SessionState, error) {
 	if sessionID == "" {
-		return StateWorking
+		return StateWorking, nil
 	}
 
 	path, err := sessionStatePath(sessionID)
 	if err != nil {
-		return StateWorking
+		return StateWorking, err
 	}
 
 	data, err := os.ReadFile(path)
 	if err != nil {
-		return StateWorking
+		if os.IsNotExist(err) {
+			return StateWorking, nil
+		}
+		return StateWorking, fmt.Errorf("cannot read session state: %w", err)
 	}
 
 	switch SessionState(strings.TrimSpace(string(data))) {
 	case StateWaiting:
-		return StateWaiting
+		return StateWaiting, nil
 	case StateDone:
-		return StateDone
+		return StateDone, nil
 	default:
-		return StateWorking
+		return StateWorking, nil
 	}
 }
 
@@ -94,7 +102,7 @@ func sessionStatePath(sessionID string) (string, error) {
 	// Имя сессии приходит извне и в путь попадать не должно
 	safeID := filepath.Base(strings.TrimSpace(sessionID))
 	if safeID == "" || safeID == "." || safeID == string(filepath.Separator) {
-		return "", os.ErrInvalid
+		return "", fmt.Errorf("invalid session id %q: %w", sessionID, os.ErrInvalid)
 	}
 
 	return filepath.Join(stateDir(), safeID), nil
@@ -111,19 +119,32 @@ func stateDir() string {
 	return filepath.Join(base, "claude-hooks", "sessions")
 }
 
-// cleanupStaleStates удаляет записи завершившихся сессий
-func cleanupStaleStates(dir string) {
+// cleanupStaleStates удаляет записи завершившихся сессий. Записи, которые
+// не удалось убрать, перечисляются в ошибке; свежие пропускаются
+func cleanupStaleStates(dir string) error {
 	entries, err := os.ReadDir(dir)
 	if err != nil {
-		return
+		return fmt.Errorf("cannot list session states: %w", err)
 	}
 
 	deadline := time.Now().Add(-stateTTL)
+	var errs []error
 	for _, entry := range entries {
 		info, err := entry.Info()
-		if err != nil || info.ModTime().After(deadline) {
+		if err != nil {
+			// Запись исчезла между чтением каталога и опросом: чистить нечего
+			if os.IsNotExist(err) {
+				continue
+			}
+			errs = append(errs, err)
 			continue
 		}
-		_ = os.Remove(filepath.Join(dir, entry.Name()))
+		if info.ModTime().After(deadline) {
+			continue
+		}
+		if err := os.Remove(filepath.Join(dir, entry.Name())); err != nil && !os.IsNotExist(err) {
+			errs = append(errs, err)
+		}
 	}
+	return errors.Join(errs...)
 }

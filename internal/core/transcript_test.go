@@ -41,6 +41,26 @@ func taskNotification(taskID string) string {
 	return `{"type":"user","message":{"content":"<task-notification>\n<task-id>` + taskID + `</task-id>\n<status>completed</status>\n</task-notification>"}}`
 }
 
+// pendingTasks считает задачи по транскрипту и проваливает тест, если он нечитаем
+func pendingTasks(t *testing.T, path string) int {
+	t.Helper()
+	got, err := PendingBackgroundTasks(path)
+	if err != nil {
+		t.Fatalf("PendingBackgroundTasks(%s): %v", path, err)
+	}
+	return got
+}
+
+// wakeupArmed проверяет будильник по транскрипту и проваливает тест, если он нечитаем
+func wakeupArmed(t *testing.T, path string) bool {
+	t.Helper()
+	got, err := AwaitingScheduledWakeup(path)
+	if err != nil {
+		t.Fatalf("AwaitingScheduledWakeup(%s): %v", path, err)
+	}
+	return got
+}
+
 func writeTranscript(t *testing.T, lines []string) string {
 	t.Helper()
 	path := filepath.Join(t.TempDir(), "transcript.jsonl")
@@ -56,12 +76,12 @@ func TestPendingBackgroundTasks_LaunchAndComplete(t *testing.T) {
 	lines = append(lines, agentLaunch("toolu_02", "af00991553a36e585")...)
 	lines = append(lines, bashLaunch("toolu_03", "b1a2c3")...)
 
-	if got := PendingBackgroundTasks(writeTranscript(t, lines)); got != 3 {
+	if got := pendingTasks(t, writeTranscript(t, lines)); got != 3 {
 		t.Errorf("запущены три задачи, насчитано %d", got)
 	}
 
 	lines = append(lines, taskNotification("a7ceadcaf07124ca8"))
-	if got := PendingBackgroundTasks(writeTranscript(t, lines)); got != 2 {
+	if got := pendingTasks(t, writeTranscript(t, lines)); got != 2 {
 		t.Errorf("одна из трёх завершена, насчитано %d", got)
 	}
 
@@ -69,7 +89,7 @@ func TestPendingBackgroundTasks_LaunchAndComplete(t *testing.T) {
 		taskNotification("af00991553a36e585"),
 		taskNotification("b1a2c3"),
 	)
-	if got := PendingBackgroundTasks(writeTranscript(t, lines)); got != 0 {
+	if got := pendingTasks(t, writeTranscript(t, lines)); got != 0 {
 		t.Errorf("все задачи завершены, насчитано %d", got)
 	}
 }
@@ -88,7 +108,7 @@ func TestPendingBackgroundTasks_QuotedMarkersIgnored(t *testing.T) {
 		`{"type":"queue-operation","operation":"enqueue","content":"<task-notification>\n<task-id>fake444</task-id>"}`,
 	}
 
-	if got := PendingBackgroundTasks(writeTranscript(t, lines)); got != 0 {
+	if got := pendingTasks(t, writeTranscript(t, lines)); got != 0 {
 		t.Errorf("в транскрипте только цитаты, насчитано %d", got)
 	}
 }
@@ -101,7 +121,7 @@ func TestPendingBackgroundTasks_ForegroundAgentIgnored(t *testing.T) {
 		`{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"toolu_20","content":"Проверка выполнена, ошибок нет."}]}}`,
 	}
 
-	if got := PendingBackgroundTasks(writeTranscript(t, lines)); got != 0 {
+	if got := pendingTasks(t, writeTranscript(t, lines)); got != 0 {
 		t.Errorf("форграундный агент не фоновая задача, насчитано %d", got)
 	}
 }
@@ -112,7 +132,7 @@ func TestPendingBackgroundTasks_TaskStopRemoves(t *testing.T) {
 		`{"type":"assistant","message":{"content":[{"type":"tool_use","id":"toolu_31","name":"TaskStop","input":{"task_id":"a30a30a30"}}]}}`,
 	)
 
-	if got := PendingBackgroundTasks(writeTranscript(t, lines)); got != 0 {
+	if got := pendingTasks(t, writeTranscript(t, lines)); got != 0 {
 		t.Errorf("остановленная задача уведомления не пришлёт, насчитано %d", got)
 	}
 }
@@ -129,7 +149,7 @@ func TestPendingBackgroundTasks_StaleLaunchExpires(t *testing.T) {
 		`{"type":"user","timestamp":"` + fresh + `","message":{"content":[{"type":"tool_result","tool_use_id":"toolu_41","content":"Async agent launched successfully\nagentId: fresh1 (internal)"}]}}`,
 	}
 
-	if got := PendingBackgroundTasks(writeTranscript(t, lines)); got != 1 {
+	if got := pendingTasks(t, writeTranscript(t, lines)); got != 1 {
 		t.Errorf("просроченный запуск не должен считаться, ожидалась 1 живая задача, насчитано %d", got)
 	}
 }
@@ -144,7 +164,7 @@ func TestAwaitingScheduledWakeup_Armed(t *testing.T) {
 	now := time.Now().UTC().Format(time.RFC3339)
 	lines := []string{scheduleWakeup(now, "")}
 
-	if !AwaitingScheduledWakeup(writeTranscript(t, lines)) {
+	if !wakeupArmed(t, writeTranscript(t, lines)) {
 		t.Error("будильник взведён, а ожидание не распознано")
 	}
 }
@@ -157,7 +177,7 @@ func TestAwaitingScheduledWakeup_StopDisarms(t *testing.T) {
 		`{"type":"assistant","timestamp":"` + now + `","message":{"content":[{"type":"tool_use","id":"toolu_wk2","name":"ScheduleWakeup","input":{"stop":true}}]}}`,
 	}
 
-	if AwaitingScheduledWakeup(writeTranscript(t, lines)) {
+	if wakeupArmed(t, writeTranscript(t, lines)) {
 		t.Error("цикл остановлен stop:true, а ожидание всё ещё распознаётся")
 	}
 }
@@ -168,7 +188,7 @@ func TestAwaitingScheduledWakeup_StaleExpires(t *testing.T) {
 	stale := time.Now().Add(-2 * time.Hour).UTC().Format(time.RFC3339)
 	lines := []string{scheduleWakeup(stale, "")}
 
-	if AwaitingScheduledWakeup(writeTranscript(t, lines)) {
+	if wakeupArmed(t, writeTranscript(t, lines)) {
 		t.Error("будильник просрочен, а ожидание всё ещё распознаётся")
 	}
 }
@@ -180,46 +200,65 @@ func TestAwaitingScheduledWakeup_QuotedIgnored(t *testing.T) {
 		`{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"toolu_50","content":"\"type\":\"tool_use\",\"name\":\"ScheduleWakeup\",\"input\":{\"delaySeconds\":600}"}]}}`,
 	}
 
-	if AwaitingScheduledWakeup(writeTranscript(t, lines)) {
+	if wakeupArmed(t, writeTranscript(t, lines)) {
 		t.Error("в транскрипте только цитата, а ожидание распознано")
 	}
 }
 
 func TestAwaitingScheduledWakeup_MissingTranscript(t *testing.T) {
-	if AwaitingScheduledWakeup("") {
+	if wakeupArmed(t, "") {
 		t.Error("без транскрипта ожидания быть не может")
 	}
-	if AwaitingScheduledWakeup(filepath.Join(t.TempDir(), "нет-такого")) {
+	armed, err := AwaitingScheduledWakeup(filepath.Join(t.TempDir(), "нет-такого"))
+	if err == nil {
+		t.Error("несуществующий транскрипт должен давать ошибку, а не молчаливый ответ")
+	}
+	if armed {
 		t.Error("несуществующий транскрипт не должен давать ожидание")
 	}
 }
 
 func TestPendingBackgroundTasks_MissingTranscript(t *testing.T) {
-	if got := PendingBackgroundTasks(""); got != 0 {
+	if got := pendingTasks(t, ""); got != 0 {
 		t.Errorf("без транскрипта должно быть 0, насчитано %d", got)
 	}
-	if got := PendingBackgroundTasks(filepath.Join(t.TempDir(), "нет-такого")); got != 0 {
+	got, err := PendingBackgroundTasks(filepath.Join(t.TempDir(), "нет-такого"))
+	if err == nil {
+		t.Error("несуществующий транскрипт должен давать ошибку, а не молчаливый ответ")
+	}
+	if got != 0 {
 		t.Errorf("несуществующий транскрипт должен давать 0, насчитано %d", got)
+	}
+}
+
+func TestPendingBackgroundTasks_BrokenRecordsReported(t *testing.T) {
+	lines := append(agentLaunch("toolu_60", "agent60"), `{"type":"user","message":{"content":{"not":"content"}}}`)
+	got, err := PendingBackgroundTasks(writeTranscript(t, lines))
+	if err == nil {
+		t.Error("нечитаемая запись должна попасть в ошибку")
+	}
+	if got != 1 {
+		t.Errorf("остальные записи должны считаться несмотря на битую: ожидалась 1 задача, насчитано %d", got)
 	}
 }
 
 func TestPendingBackgroundTasks_MonitorAliveThroughEvents(t *testing.T) {
 	var lines []string
 	lines = append(lines, monitorLaunch("toolu_01", "bm0n1t0r")...)
-	if got := PendingBackgroundTasks(writeTranscript(t, lines)); got != 1 {
+	if got := pendingTasks(t, writeTranscript(t, lines)); got != 1 {
 		t.Fatalf("монитор запущен, насчитано %d", got)
 	}
 
 	// Событие монитора — не завершение: он продолжает слушать
 	lines = append(lines, monitorEvent("bm0n1t0r", "=== session one"),
 		monitorEvent("bm0n1t0r", "=== session two"))
-	if got := PendingBackgroundTasks(writeTranscript(t, lines)); got != 1 {
+	if got := pendingTasks(t, writeTranscript(t, lines)); got != 1 {
 		t.Errorf("после двух событий монитор должен быть жив, насчитано %d", got)
 	}
 
 	// Истёкший таймаут — завершение
 	lines = append(lines, monitorEvent("bm0n1t0r", "[Monitor timed out — re-arm if needed.]"))
-	if got := PendingBackgroundTasks(writeTranscript(t, lines)); got != 0 {
+	if got := pendingTasks(t, writeTranscript(t, lines)); got != 0 {
 		t.Errorf("монитор истёк, насчитано %d", got)
 	}
 }
@@ -229,7 +268,7 @@ func TestPendingBackgroundTasks_MonitorEndsByStatus(t *testing.T) {
 	lines = append(lines, monitorLaunch("toolu_01", "bm0n1t0r")...)
 	lines = append(lines, monitorEvent("bm0n1t0r", "line"))
 	lines = append(lines, taskNotification("bm0n1t0r"))
-	if got := PendingBackgroundTasks(writeTranscript(t, lines)); got != 0 {
+	if got := pendingTasks(t, writeTranscript(t, lines)); got != 0 {
 		t.Errorf("монитор завершён со статусом, насчитано %d", got)
 	}
 }
