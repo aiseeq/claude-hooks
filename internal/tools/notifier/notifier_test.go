@@ -10,10 +10,10 @@ import (
 	"github.com/aiseeq/claude-hooks/internal/core"
 )
 
-func newNotifier(t *testing.T, config core.ToolConfig) *NotifierTool {
+func newNotifier(t *testing.T, config core.ToolConfig) *Tool {
 	t.Helper()
 
-	tool, err := NewNotifierTool(config, core.NewTestLogger())
+	tool, err := New(config, testLogger(t))
 	if err != nil {
 		t.Fatalf("failed to create tool: %v", err)
 	}
@@ -303,4 +303,15 @@ func TestIsIdleReminder(t *testing.T) {
 	if IsIdleReminder("") {
 		t.Error("пустое сообщение не напоминание")
 	}
+}
+
+// testLogger — логгер для тестов пакета: пишет в stderr, который go test
+// показывает только при провале
+func testLogger(t *testing.T) core.Logger {
+	t.Helper()
+	logger, err := core.NewLogger(core.LoggerConfig{Level: "debug"})
+	if err != nil {
+		t.Fatalf("не удалось создать логгер: %v", err)
+	}
+	return logger
 }

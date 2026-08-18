@@ -86,11 +86,13 @@ func TestNewLogger_FileOutputRequiresPath(t *testing.T) {
 	}
 }
 
-func TestTestLogger_SharesBufferAcrossWith(t *testing.T) {
-	logger := NewTestLogger()
-	logger.With("component", "engine").Info("child message")
-
-	if !strings.Contains(logger.Output(), "child message") {
-		t.Errorf("производный логгер должен писать в общий буфер: %s", logger.Output())
+// testLogger — логгер для тестов пакета: пишет в stderr, который go test
+// показывает только при провале
+func testLogger(t *testing.T) Logger {
+	t.Helper()
+	logger, err := NewLogger(LoggerConfig{Level: "debug"})
+	if err != nil {
+		t.Fatalf("не удалось создать логгер: %v", err)
 	}
+	return logger
 }

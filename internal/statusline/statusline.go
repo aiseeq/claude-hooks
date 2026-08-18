@@ -69,7 +69,7 @@ type Input struct {
 // Render читает данные Claude Code и возвращает строку статуса.
 // Попутно обновляется заголовок окна: строка статуса видна только в активном
 // окне, а по заголовку сессию видно в панели задач и в переключателе окон
-func Render(ctx context.Context, stdin io.Reader) (string, error) {
+func Render(ctx context.Context, stdin io.Reader, logger core.Logger) (string, error) {
 	data, err := io.ReadAll(stdin)
 	if err != nil {
 		return "", fmt.Errorf("failed to read status line input: %w", err)
@@ -80,17 +80,27 @@ func Render(ctx context.Context, stdin io.Reader) (string, error) {
 		return "", fmt.Errorf("failed to parse status line input: %w", err)
 	}
 
-	line, title := build(ctx, input)
-	desktop.SetTerminalTitle(title)
+	line, title := build(ctx, input, logger)
+	if err := desktop.SetTerminalTitle(title); err != nil {
+		logger.Warn("terminal title not set", "error", err)
+	}
 
 	return line, nil
 }
 
-// build собирает строку статуса и заголовок окна
-func build(ctx context.Context, input Input) (string, string) {
+// build собирает строку статуса и заголовок окна. Сбои источников (состояние
+// сессии, git) строку не срывают: она рисуется по тому, что удалось прочитать,
+// а сбой уходит в лог
+func build(ctx context.Context, input Input, logger core.Logger) (string, string) {
 	dir := workingDir(input)
-	state := core.LoadSessionState(input.SessionID)
-	git := ReadGitStatus(ctx, dir)
+	state, err := core.LoadSessionState(input.SessionID)
+	if err != nil {
+		logger.Warn("session state unavailable", "session", input.SessionID, "error", err)
+	}
+	git, err := ReadGitStatus(ctx, dir)
+	if err != nil {
+		logger.Warn("git status incomplete", "dir", dir, "error", err)
+	}
 
 	// Путь не показывается: плашка уже называет проект, а полный путь
 	// повторяет её и занимает место

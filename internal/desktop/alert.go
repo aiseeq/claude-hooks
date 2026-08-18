@@ -2,6 +2,7 @@ package desktop
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -49,18 +50,28 @@ type Alert struct {
 }
 
 // Deliver показывает оповещение и, если пользователь нажал на уведомление,
-// переводит фокус на его окно. Метод блокирующий: вызывать из фонового процесса
+// переводит фокус на его окно. Метод блокирующий: вызывать из фонового процесса.
+// Звук и уведомление независимы: сбой одного не отменяет другого, ошибки
+// обоих возвращаются вместе
 func Deliver(ctx context.Context, alert Alert) error {
-	ctx, cancel := context.WithTimeout(ctx, maxWatchLifetime)
-	defer cancel()
-
+	var soundErr error
 	if alert.Sound {
-		playSound()
+		if err := playSound(); err != nil {
+			soundErr = fmt.Errorf("sound: %w", err)
+		}
 	}
 
 	if !alert.Desktop {
-		return nil
+		return soundErr
 	}
+
+	return errors.Join(soundErr, deliverDesktop(ctx, alert))
+}
+
+// deliverDesktop показывает уведомление и ждёт клика по нему
+func deliverDesktop(ctx context.Context, alert Alert) error {
+	watchCtx, cancel := context.WithTimeout(ctx, maxWatchLifetime)
+	defer cancel()
 
 	conn, err := dbus.SessionBus()
 	if err != nil {
@@ -89,7 +100,7 @@ func Deliver(ctx context.Context, alert Alert) error {
 		return nil
 	}
 
-	clicked, err := WaitForAction(ctx, conn, id)
+	clicked, err := WaitForAction(watchCtx, conn, id)
 	if err != nil {
 		return err
 	}
@@ -134,27 +145,36 @@ func DeliverInBackground(executable, watchCommand string, alert Alert) error {
 	return nil
 }
 
-// playSound проигрывает звук первым доступным способом и не ждёт его окончания
-func playSound() {
+// playSound проигрывает звук первым доступным способом и не ждёт его окончания.
+// Если не подошёл ни один, ошибка перечисляет, чем не подошёл каждый
+func playSound() error {
+	var errs []error
 	for _, candidate := range soundCandidates {
-		if candidate.file != "" {
-			if _, err := os.Stat(candidate.file); err != nil {
-				continue
-			}
-		}
-		if _, err := exec.LookPath(candidate.command); err != nil {
+		if err := candidate.play(); err != nil {
+			errs = append(errs, fmt.Errorf("%s: %w", candidate.command, err))
 			continue
 		}
+		return nil
+	}
+	return fmt.Errorf("no sound backend worked: %w", errors.Join(errs...))
+}
 
-		args := candidate.args
-		if candidate.file != "" {
-			args = append(append([]string{}, args...), candidate.file)
-		}
-
-		if err := exec.Command(candidate.command, args...).Start(); err == nil {
-			return
+// play запускает воспроизведение, если плеер и звуковой файл на месте
+func (c soundCandidate) play() error {
+	if c.file != "" {
+		if _, err := os.Stat(c.file); err != nil {
+			return err
 		}
 	}
+	if _, err := exec.LookPath(c.command); err != nil {
+		return err
+	}
+
+	args := c.args
+	if c.file != "" {
+		args = append(append([]string{}, args...), c.file)
+	}
+	return exec.Command(c.command, args...).Start()
 }
 
 // joinInts преобразует список чисел в строку через запятую
@@ -167,18 +187,18 @@ func joinInts(values []int) string {
 }
 
 // ParseInts разбирает список чисел, записанных через запятую
-func ParseInts(raw string) []int {
+func ParseInts(raw string) ([]int, error) {
 	if raw == "" {
-		return nil
+		return nil, nil
 	}
 
 	var values []int
 	for _, part := range strings.Split(raw, ",") {
 		value, err := strconv.Atoi(strings.TrimSpace(part))
 		if err != nil {
-			continue
+			return nil, fmt.Errorf("invalid pid list %q: %w", raw, err)
 		}
 		values = append(values, value)
 	}
-	return values
+	return values, nil
 }

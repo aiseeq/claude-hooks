@@ -161,7 +161,7 @@ func TestBuildFitsSingleLine(t *testing.T) {
 	input.Model.DisplayName = "Opus 5 (1M context)"
 	input.ContextWindow.UsedPercentage = 47
 
-	line, title := build(context.Background(), input)
+	line, title := build(context.Background(), input, testLogger(t))
 
 	if strings.Contains(line, "\n") {
 		t.Errorf("строка статуса должна умещаться в одну строку: %q", line)
@@ -199,4 +199,15 @@ func TestWorkingDirPrefersSessionDir(t *testing.T) {
 	if got := workingDir(input); got != "/from/project" {
 		t.Errorf("ожидалось /from/project, получено %q", got)
 	}
+}
+
+// testLogger — логгер для тестов пакета: пишет в stderr, который go test
+// показывает только при провале
+func testLogger(t *testing.T) core.Logger {
+	t.Helper()
+	logger, err := core.NewLogger(core.LoggerConfig{Level: "debug"})
+	if err != nil {
+		t.Fatalf("не удалось создать логгер: %v", err)
+	}
+	return logger
 }

@@ -13,7 +13,7 @@ import (
 func newFormatterTool(t *testing.T, config core.ToolConfig) *FormatterTool {
 	t.Helper()
 
-	tool, err := NewFormatterTool(config, core.NewTestLogger())
+	tool, err := NewFormatterTool(config, testLogger(t))
 	if err != nil {
 		t.Fatalf("failed to create tool: %v", err)
 	}

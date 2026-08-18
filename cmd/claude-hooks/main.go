@@ -95,44 +95,12 @@ func newHookCmd(hookType, short string, exitCode *int) *cobra.Command {
 
 // runHook выполняет основную логику хука
 func runHook(ctx context.Context, hookType string) (int, error) {
-	ctx, cancel := context.WithTimeout(ctx, timeout)
+	hookCtx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 
 	input, err := readInput(os.Stdin, hookType)
 	if err != nil {
 		return exitError, err
-	}
-
-	// Остановка и минутное напоминание при живых фоновых задачах или взведённом
-	// будильнике /loop — не события для человека: Claude вернётся к работе сам,
-	// когда задача отчитается или будильник сработает. Пропускаются целиком,
-	// до записи состояния, — иначе «готово» или «ждёт» соврали бы строке
-	// статуса, а финальная остановка выглядела бы повтором и осталась без
-	// уведомления. Запрос разрешения проходит всегда: без ответа человека
-	// сессия встанет
-	if hookType == "stop" || hookType == "notification" {
-		// Решение по событию сессии разбирают постфактум («почему позвонило»,
-		// «почему не позвонило»), а событие приходит и уходит бесследно
-		reason := autoResumeMute(hookType, input)
-		logDecision(hookType, input, reason)
-		if reason != "" {
-			return exitAllowed, nil
-		}
-	}
-
-	// Строка статуса рисуется отдельным процессом и о ходе сессии не знает —
-	// состояние для неё оставляют хуки. Предыдущее состояние идёт в контекст:
-	// по нему виден переход, а не только новое состояние
-	ctx = core.WithPreviousState(ctx, core.LoadSessionState(input.SessionID))
-	if state, ok := hookStates[hookType]; ok {
-		core.SaveSessionState(input.SessionID, state)
-	}
-
-	// Отправка запроса ничего не проверяет: она лишь отмечает, что работа
-	// возобновилась, и без неё ответ без единого вызова инструмента остался бы
-	// незамеченным
-	if hookType == hookUserPromptSubmit {
-		return exitAllowed, nil
 	}
 
 	config, err := core.LoadConfig(configPath)
@@ -145,6 +113,46 @@ func runHook(ctx context.Context, hookType string) (int, error) {
 		return exitError, fmt.Errorf("failed to create logger: %w", err)
 	}
 
+	// Остановка и минутное напоминание при живых фоновых задачах или взведённом
+	// будильнике /loop — не события для человека: Claude вернётся к работе сам,
+	// когда задача отчитается или будильник сработает. Пропускаются целиком,
+	// до записи состояния, — иначе «готово» или «ждёт» соврали бы строке
+	// статуса, а финальная остановка выглядела бы повтором и осталась без
+	// уведомления. Запрос разрешения проходит всегда: без ответа человека
+	// сессия встанет
+	if hookType == "stop" || hookType == "notification" {
+		// Решение по событию сессии разбирают постфактум («почему позвонило»,
+		// «почему не позвонило»), а событие приходит и уходит бесследно
+		resume := checkAutoResume(logger, hookType, input)
+		reason := resume.muteReason()
+		logDecision(logger, hookType, input, resume, reason)
+		if reason != "" {
+			return exitAllowed, nil
+		}
+	}
+
+	// Строка статуса рисуется отдельным процессом и о ходе сессии не знает —
+	// состояние для неё оставляют хуки. Предыдущее состояние идёт в контекст:
+	// по нему виден переход, а не только новое состояние. Сбой хранилища
+	// состояния операцию не блокирует: строка статуса — не повод ломать хук
+	previous, err := core.LoadSessionState(input.SessionID)
+	if err != nil {
+		logger.Warn("session state unavailable", "session", input.SessionID, "error", err)
+	}
+	hookCtx = core.WithPreviousState(hookCtx, previous)
+	if state, ok := hookStates[hookType]; ok {
+		if err := core.SaveSessionState(input.SessionID, state); err != nil {
+			logger.Warn("session state not saved", "session", input.SessionID, "error", err)
+		}
+	}
+
+	// Отправка запроса ничего не проверяет: она лишь отмечает, что работа
+	// возобновилась, и без неё ответ без единого вызова инструмента остался бы
+	// незамеченным
+	if hookType == hookUserPromptSubmit {
+		return exitAllowed, nil
+	}
+
 	engine, err := processor.New(config, logger)
 	if err != nil {
 		return exitError, fmt.Errorf("failed to create processor: %w", err)
@@ -153,13 +161,13 @@ func runHook(ctx context.Context, hookType string) (int, error) {
 	var response *core.HookResponse
 	switch hookType {
 	case "pre-tool-use":
-		response, err = engine.ProcessPreToolUse(ctx, input)
+		response, err = engine.ProcessPreToolUse(hookCtx, input)
 	case "post-tool-use":
-		response, err = engine.ProcessPostToolUse(ctx, input)
+		response, err = engine.ProcessPostToolUse(hookCtx, input)
 	case "stop":
-		response, err = engine.ProcessStop(ctx, input)
+		response, err = engine.ProcessStop(hookCtx, input)
 	case "notification":
-		response, err = engine.ProcessNotification(ctx, input)
+		response, err = engine.ProcessNotification(hookCtx, input)
 	default:
 		return exitError, fmt.Errorf("unknown hook type: %s", hookType)
 	}
@@ -178,47 +186,72 @@ func runHook(ctx context.Context, hookType string) (int, error) {
 	return exitBlocked, nil
 }
 
-// autoResumeMute сообщает, глушится ли событие из-за того, что сессия вернётся
-// к работе сама — по живой фоновой задаче или взведённому будильнику /loop, —
-// и называет причину; пустая строка означает «не глушить». Остановка глушится
-// всегда, уведомление — только минутное напоминание об ожидании
-func autoResumeMute(hookType string, input *core.ToolInput) string {
-	// Неинтерактивную сессию человек не ждёт вовсе — ни её остановку, ни её
-	// вопросы: ответить в неё всё равно некому
-	if core.PrintModeSession() {
+// autoResume — признаки того, что сессия вернётся к работе сама и звать
+// человека не нужно
+type autoResume struct {
+	// applicable — событие вообще подлежит глушению: остановка или минутное
+	// напоминание об ожидании; запрос разрешения проходит всегда
+	applicable   bool
+	printMode    bool
+	pendingTasks int
+	wakeupArmed  bool
+}
+
+// muteReason называет причину глушения; пустая строка означает «не глушить»
+func (r autoResume) muteReason() string {
+	switch {
+	case r.printMode:
 		return "неинтерактивная сессия claude -p"
-	}
-	switch hookType {
-	case "stop":
-	case "notification":
-		if !notifier.IsIdleReminder(input.Message) {
-			return ""
-		}
+	case !r.applicable:
+		return ""
+	case r.pendingTasks > 0:
+		return fmt.Sprintf("живых фоновых задач: %d", r.pendingTasks)
+	case r.wakeupArmed:
+		return "взведён будильник /loop"
 	default:
 		return ""
 	}
-	if n := core.PendingBackgroundTasks(input.TranscriptPath); n > 0 {
-		return fmt.Sprintf("живых фоновых задач: %d", n)
+}
+
+// checkAutoResume собирает признаки самовозобновления сессии. Сбой источника
+// (нечитаемый /proc или транскрипт) уходит в лог, а признак остаётся в
+// значении «не глушить»: лишний звонок лучше пропущенного
+func checkAutoResume(logger core.Logger, hookType string, input *core.ToolInput) autoResume {
+	var resume autoResume
+
+	// Неинтерактивную сессию человек не ждёт вовсе — ни её остановку, ни её
+	// вопросы: ответить в неё всё равно некому
+	printMode, err := core.PrintModeSession()
+	if err != nil {
+		logger.Warn("session mode unknown, assuming interactive", "error", err)
 	}
-	if core.AwaitingScheduledWakeup(input.TranscriptPath) {
-		return "взведён будильник /loop"
+	resume.printMode = printMode
+
+	switch hookType {
+	case "stop":
+		resume.applicable = true
+	case "notification":
+		resume.applicable = notifier.IsIdleReminder(input.Message)
 	}
-	return ""
+	if !resume.applicable || resume.printMode {
+		return resume
+	}
+
+	resume.pendingTasks, err = core.PendingBackgroundTasks(input.TranscriptPath)
+	if err != nil {
+		logger.Warn("background task count may be incomplete", "transcript", input.TranscriptPath, "error", err)
+	}
+	resume.wakeupArmed, err = core.AwaitingScheduledWakeup(input.TranscriptPath)
+	if err != nil {
+		logger.Warn("wakeup check may be incomplete", "transcript", input.TranscriptPath, "error", err)
+	}
+	return resume
 }
 
 // logDecision записывает решение по событию сессии вместе с тем, из чего оно
 // сделано: без пути транскрипта и счётчиков непонятно, глушение промахнулось
-// или сессии правда нечего ждать. Логгер поднимается отдельно — до этого места
-// конфиг ещё не читался; при любой осечке событие просто останется без записи
-func logDecision(hookType string, input *core.ToolInput, reason string) {
-	config, err := core.LoadConfig(configPath)
-	if err != nil {
-		return
-	}
-	logger, err := core.NewLogger(config.Logger)
-	if err != nil {
-		return
-	}
+// или сессии правда нечего ждать
+func logDecision(logger core.Logger, hookType string, input *core.ToolInput, resume autoResume, reason string) {
 	if reason != "" {
 		logger.Info("alert muted: session resumes on its own",
 			"hook", hookType, "reason", reason)
@@ -228,8 +261,8 @@ func logDecision(hookType string, input *core.ToolInput, reason string) {
 		"hook", hookType,
 		"transcript", input.TranscriptPath,
 		"session", input.SessionID,
-		"pending_tasks", core.PendingBackgroundTasks(input.TranscriptPath),
-		"wakeup_armed", core.AwaitingScheduledWakeup(input.TranscriptPath),
+		"pending_tasks", resume.pendingTasks,
+		"wakeup_armed", resume.wakeupArmed,
 	)
 }
 
@@ -331,7 +364,10 @@ func newConfigCmd() *cobra.Command {
 			Use:   "validate",
 			Short: "Проверить файл конфигурации",
 			RunE: func(cmd *cobra.Command, args []string) error {
-				path := configPathOrDefault()
+				path, err := configPathOrDefault()
+				if err != nil {
+					return err
+				}
 				if _, err := core.LoadConfig(path); err != nil {
 					return err
 				}
@@ -343,7 +379,10 @@ func newConfigCmd() *cobra.Command {
 			Use:   "init",
 			Short: "Создать конфигурацию по умолчанию",
 			RunE: func(cmd *cobra.Command, args []string) error {
-				path := configPathOrDefault()
+				path, err := configPathOrDefault()
+				if err != nil {
+					return err
+				}
 				if _, err := os.Stat(path); err == nil {
 					return fmt.Errorf("файл уже существует: %s", path)
 				}
@@ -361,7 +400,10 @@ func newConfigCmd() *cobra.Command {
 
 // showConfig печатает состояние валидаторов и инструментов
 func showConfig() error {
-	path := configPathOrDefault()
+	path, err := configPathOrDefault()
+	if err != nil {
+		return err
+	}
 	config, err := core.LoadConfig(path)
 	if err != nil {
 		return err
@@ -389,9 +431,9 @@ func showConfig() error {
 }
 
 // configPathOrDefault возвращает заданный путь конфигурации либо путь по умолчанию
-func configPathOrDefault() string {
+func configPathOrDefault() (string, error) {
 	if configPath != "" {
-		return configPath
+		return configPath, nil
 	}
 	return core.DefaultConfigPath()
 }
@@ -433,8 +475,14 @@ func newNotifyCmd() *cobra.Command {
 				if windowPID == 0 {
 					windowPID = os.Getpid()
 				}
-				// Окно принадлежит одному из процессов в цепочке до эмулятора терминала
-				alert.ActivatePIDs = desktop.ProcessAncestors(windowPID)
+				// Окно принадлежит одному из процессов в цепочке до эмулятора
+				// терминала; оборванная цепочка всё равно годится — окно может
+				// быть у собранной части
+				ancestors, err := desktop.ProcessAncestors(windowPID)
+				if err != nil {
+					fmt.Fprintf(os.Stderr, "claude-hooks: process ancestry incomplete: %v\n", err)
+				}
+				alert.ActivatePIDs = ancestors
 			}
 
 			executable, err := os.Executable()
@@ -476,7 +524,11 @@ func newDeliverAlertCmd() *cobra.Command {
 		Short:  "Показать уведомление и обработать клик по нему",
 		Hidden: true,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			alert.ActivatePIDs = desktop.ParseInts(pids)
+			activatePIDs, err := desktop.ParseInts(pids)
+			if err != nil {
+				return err
+			}
+			alert.ActivatePIDs = activatePIDs
 			alert.ActionLabel = actionLabel
 			return desktop.Deliver(cmd.Context(), alert)
 		},
@@ -507,7 +559,15 @@ func newStatusLineCmd() *cobra.Command {
 Подключается в ~/.claude/settings.json:
   "statusLine": {"type": "command", "command": "~/.claude/hooks/claude-hooks statusline"}`,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			line, err := statusline.Render(cmd.Context(), os.Stdin)
+			config, err := core.LoadConfig(configPath)
+			if err != nil {
+				return fmt.Errorf("failed to load config: %w", err)
+			}
+			logger, err := core.NewLogger(config.Logger)
+			if err != nil {
+				return fmt.Errorf("failed to create logger: %w", err)
+			}
+			line, err := statusline.Render(cmd.Context(), os.Stdin, logger)
 			if err != nil {
 				return err
 			}

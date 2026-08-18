@@ -91,7 +91,7 @@ func NewSecretsValidator(config core.ValidatorConfig, logger core.Logger) (*Secr
 }
 
 // Validate выполняет валидацию файла
-func (v *SecretsValidator) Validate(ctx context.Context, file *core.FileAnalysis) (*core.ValidationResult, error) {
+func (v *SecretsValidator) Validate(_ context.Context, file *core.FileAnalysis) (*core.ValidationResult, error) {
 	if !v.IsEnabled() {
 		return &core.ValidationResult{IsValid: true}, nil
 	}
@@ -126,11 +126,7 @@ func (v *SecretsValidator) Validate(ctx context.Context, file *core.FileAnalysis
 
 	v.logger.Info("secrets detected in code", "file", file.Path, "violations", len(violations))
 
-	return &core.ValidationResult{
-		IsValid:     false,
-		Violations:  violations,
-		Suggestions: v.suggestions(file),
-	}, nil
+	return core.NewValidationResult(false, violations, v.suggestions(file)), nil
 }
 
 // suggestions генерирует рекомендации с учетом языка файла

@@ -66,6 +66,7 @@ func stripLine(line string, inBlockComment, inRawString bool) (string, bool, boo
 		case line[i] == '"' || line[i] == '\'':
 			quote := line[i]
 			i++
+			// quadratic-loop: safe — внутренний цикл двигает тот же индекс i, строка проходится один раз
 			for ; i < len(line); i++ {
 				if line[i] == '\\' && i+1 < len(line) {
 					out[i], out[i+1] = ' ', ' '

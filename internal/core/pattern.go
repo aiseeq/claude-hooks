@@ -36,12 +36,5 @@ func FindPatternMatches(content string, patterns []*regexp.Regexp) []PatternMatc
 
 // CreateViolation создает нарушение из совпадения с паттерном
 func CreateViolation(match PatternMatch, violationType, message, suggestion string, severity Level) Violation {
-	return Violation{
-		Type:       violationType,
-		Message:    message,
-		Suggestion: suggestion,
-		Line:       match.Line,
-		Column:     match.Column,
-		Severity:   severity,
-	}
+	return NewViolation(violationType, message, suggestion, severity, match.Line, match.Column)
 }

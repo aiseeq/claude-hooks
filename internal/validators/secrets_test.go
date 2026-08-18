@@ -10,7 +10,7 @@ import (
 func newSecretsValidator(t *testing.T, config core.ValidatorConfig) *SecretsValidator {
 	t.Helper()
 
-	validator, err := NewSecretsValidator(config, core.NewTestLogger())
+	validator, err := NewSecretsValidator(config, testLogger(t))
 	if err != nil {
 		t.Fatalf("failed to create validator: %v", err)
 	}
@@ -136,7 +136,7 @@ func TestSecretsValidator_InvalidPattern(t *testing.T) {
 	_, err := NewSecretsValidator(core.ValidatorConfig{
 		Enabled:    true,
 		JWTPattern: "([a-z",
-	}, core.NewTestLogger())
+	}, testLogger(t))
 
 	if err == nil {
 		t.Error("некорректный regex должен приводить к ошибке создания валидатора")
@@ -156,4 +156,15 @@ func TestSecretsValidator_Disabled(t *testing.T) {
 	if !result.IsValid {
 		t.Error("выключенный валидатор не должен блокировать")
 	}
+}
+
+// testLogger — логгер для тестов пакета: пишет в stderr, который go test
+// показывает только при провале
+func testLogger(t *testing.T) core.Logger {
+	t.Helper()
+	logger, err := core.NewLogger(core.LoggerConfig{Level: "debug"})
+	if err != nil {
+		t.Fatalf("не удалось создать логгер: %v", err)
+	}
+	return logger
 }

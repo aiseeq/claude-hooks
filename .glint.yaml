@@ -1,0 +1,24 @@
+# Glint configuration
+# See: https://github.com/aiseeq/glint
+
+version: 1
+
+settings:
+  exclude:
+    - vendor/**
+    - "**/*_test.go"
+  min_severity: low
+  output: console
+
+categories:
+  patterns:
+    enabled: true
+    rules:
+      scattered-construction:
+        exceptions:
+          - file: "cmd/claude-hooks/main.go"
+            pattern: "cobra.Command"
+            reason: >-
+              Литералы cobra.Command — это таблица подкоманд CLI: у каждой свой
+              набор полей (Use, Short, Long, Hidden, RunE), общей функции сборки
+              у них быть не может.

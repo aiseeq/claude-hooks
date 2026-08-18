@@ -90,6 +90,19 @@ type Violation struct {
 	Severity   Level  `json:"severity"`
 }
 
+// NewViolation создает нарушение. Единственная точка сборки: новое поле
+// добавляется здесь, а не в каждом валидаторе по отдельности
+func NewViolation(violationType, message, suggestion string, severity Level, line, column int) Violation {
+	return Violation{
+		Type:       violationType,
+		Message:    message,
+		Suggestion: suggestion,
+		Line:       line,
+		Column:     column,
+		Severity:   severity,
+	}
+}
+
 // HookResponse представляет ответ хука
 type HookResponse struct {
 	Action      HookAction  `json:"action"`
@@ -113,6 +126,17 @@ type ValidationResult struct {
 	IsValid     bool        `json:"is_valid"`
 	Violations  []Violation `json:"violations"`
 	Suggestions []string    `json:"suggestions"`
+}
+
+// NewValidationResult собирает результат валидации. Годность задаётся явно:
+// нарушения-предупреждения (например, ошибка форматирования уже записанного
+// файла) операцию не блокируют
+func NewValidationResult(isValid bool, violations []Violation, suggestions []string) *ValidationResult {
+	return &ValidationResult{
+		IsValid:     isValid,
+		Violations:  violations,
+		Suggestions: suggestions,
+	}
 }
 
 // ToolValidator интерфейс для обработки конкретных инструментов Claude Code

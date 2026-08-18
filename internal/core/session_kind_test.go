@@ -39,33 +39,46 @@ func startWithArgs(t *testing.T, args ...string) string {
 	return pid
 }
 
+// printMode вызывает printModeCmdline и проваливает тест на ошибке чтения
+func printMode(t *testing.T, pid string) bool {
+	t.Helper()
+	got, err := printModeCmdline(pid)
+	if err != nil {
+		t.Fatalf("printModeCmdline(%q): %v", pid, err)
+	}
+	return got
+}
+
 func TestPrintModeCmdline_PrintFlag(t *testing.T) {
-	if !printModeCmdline(startWithArgs(t, "-p")) {
+	if !printMode(t, startWithArgs(t, "-p")) {
 		t.Error("флаг -p в командной строке — сессия неинтерактивная")
 	}
-	if !printModeCmdline(startWithArgs(t, "--print")) {
+	if !printMode(t, startWithArgs(t, "--print")) {
 		t.Error("флаг --print в командной строке — сессия неинтерактивная")
 	}
 }
 
 func TestPrintModeCmdline_Interactive(t *testing.T) {
-	if printModeCmdline(startWithArgs(t)) {
+	if printMode(t, startWithArgs(t)) {
 		t.Error("без флага печати сессия интерактивная")
 	}
 	// Флаг как часть другого аргумента признаком не является
-	if printModeCmdline(startWithArgs(t, "-print")) {
+	if printMode(t, startWithArgs(t, "-print")) {
 		t.Error("«-print» не флаг печати claude")
 	}
 }
 
 func TestPrintModeCmdline_NoProcess(t *testing.T) {
-	if printModeCmdline("") {
+	if printMode(t, "") {
 		t.Error("без pid режим определить нельзя")
 	}
-	if printModeCmdline("999999999") {
-		t.Error("несуществующий процесс не должен считаться неинтерактивным")
-	}
-	if printModeCmdline("../../etc/passwd") {
-		t.Error("pid из окружения не должен уводить чтение из /proc")
+	for _, pid := range []string{"999999999", "../../etc/passwd"} {
+		got, err := printModeCmdline(pid)
+		if err == nil {
+			t.Errorf("pid %q: нечитаемая командная строка должна давать ошибку", pid)
+		}
+		if got {
+			t.Errorf("pid %q: не должен считаться неинтерактивным", pid)
+		}
 	}
 }

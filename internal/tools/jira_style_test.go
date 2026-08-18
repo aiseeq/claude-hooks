@@ -11,7 +11,7 @@ import (
 
 func newJiraStyleTool(t *testing.T) *JiraStyleTool {
 	t.Helper()
-	tool, err := NewJiraStyleTool(core.ToolConfig{Enabled: true}, core.NewTestLogger())
+	tool, err := NewJiraStyleTool(core.ToolConfig{Enabled: true}, testLogger(t))
 	if err != nil {
 		t.Fatalf("NewJiraStyleTool: %v", err)
 	}

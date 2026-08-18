@@ -10,7 +10,7 @@ import (
 func newRuntimeExitValidator(t *testing.T, config core.ValidatorConfig) *RuntimeExitValidator {
 	t.Helper()
 
-	validator, err := NewRuntimeExitValidator(config, core.NewTestLogger())
+	validator, err := NewRuntimeExitValidator(config, testLogger(t))
 	if err != nil {
 		t.Fatalf("failed to create validator: %v", err)
 	}
