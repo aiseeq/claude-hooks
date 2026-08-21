@@ -39,13 +39,27 @@ const (
 	transcriptLineMax     = 64 * 1024 * 1024
 )
 
-// transcriptRecord — строка транскрипта: тип записи и содержимое сообщения
+// transcriptRecord — строка транскрипта: тип записи и содержимое сообщения.
+// Уведомление о задаче доезжает до транскрипта тремя видами записей, смотря
+// когда оно пришло: между ходами — user-сообщением, посреди хода — вложением
+// queued_command, и в обоих случаях — записями очереди queue-operation
+// (enqueue при завершении задачи, remove при доставке модели)
 type transcriptRecord struct {
 	Type      string `json:"type"`
 	Timestamp string `json:"timestamp"`
 	Message   struct {
 		Content messageContent `json:"content"`
 	} `json:"message"`
+	// Текст записи очереди queue-operation
+	Operation string `json:"operation"`
+	Content   string `json:"content"`
+	// Вложение: уведомление, доставленное посреди хода. Запрос человека с
+	// картинкой приходит тем же вложением, но списком блоков
+	Attachment struct {
+		Type        string         `json:"type"`
+		CommandMode string         `json:"commandMode"`
+		Prompt      messageContent `json:"prompt"`
+	} `json:"attachment"`
 }
 
 // contentBlock — блок содержимого сообщения: вызов инструмента, его результат
@@ -159,7 +173,7 @@ func (t *taskTracker) visit(record transcriptRecord) {
 			t.visitToolUse(block)
 		}
 	case "user":
-		// Уведомление о завершении приходит текстом сообщения
+		// Уведомление между ходами приходит текстом сообщения
 		if text := record.Message.Content.Text; text != "" {
 			t.complete(text)
 			return
@@ -167,6 +181,14 @@ func (t *taskTracker) visit(record transcriptRecord) {
 		for _, block := range record.Message.Content.Blocks {
 			t.visitUserBlock(record.Timestamp, block)
 		}
+	case "attachment":
+		// Уведомление посреди хода: вложение с запросом из очереди
+		t.complete(record.Attachment.Prompt.flatten())
+	case "queue-operation":
+		// Запись очереди появляется при завершении задачи и при доставке;
+		// задача завершена уже по первой из них, а в интерактивной сессии
+		// очередь разбирается сразу, так что ход без неё не заканчивается
+		t.complete(record.Content)
 	}
 }
 
@@ -265,7 +287,11 @@ func (t *taskTracker) alive() int {
 // уведомления ещё не приходило. Запуски и завершения ищутся не по всему тексту,
 // а в записях транскрипта строго определённого вида: содержимое прочитанных
 // файлов тоже попадает в транскрипт и подстрочным поиском давало бы ложные
-// срабатывания. Пустой путь — событие без транскрипта, задач нет.
+// срабатывания. Завершение распознаётся в любой из записей, которыми
+// уведомление попадает в транскрипт (user, attachment, queue-operation): иначе
+// задача, отчитавшаяся посреди хода, считалась бы живой до истечения
+// pendingTaskTTL и глушила бы уведомления всё это время. Пустой путь —
+// событие без транскрипта, задач нет.
 //
 // Ошибка сопровождает счёт, а не заменяет его: нечитаемые записи пропущены,
 // и по остальным счёт всё равно посчитан.
