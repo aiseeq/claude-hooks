@@ -10,7 +10,8 @@ import (
 
 // Записи транскрипта в тестах повторяют структуру реальных: запуск задачи —
 // это пара «tool_use инструмента Agent или фонового Bash» и «tool_result
-// с текстом запуска», завершение — user-запись с task-notification
+// с текстом запуска», завершение — task-notification в user-записи (между
+// ходами), во вложении queued_command (посреди хода) или в записи очереди
 
 func agentLaunch(toolUseID, agentID string) []string {
 	return []string{
@@ -39,6 +40,14 @@ func monitorEvent(taskID, event string) string {
 
 func taskNotification(taskID string) string {
 	return `{"type":"user","message":{"content":"<task-notification>\n<task-id>` + taskID + `</task-id>\n<status>completed</status>\n</task-notification>"}}`
+}
+
+func taskNotificationAttachment(taskID string) string {
+	return `{"type":"attachment","attachment":{"type":"queued_command","commandMode":"task-notification","prompt":"<task-notification>\n<task-id>` + taskID + `</task-id>\n<status>completed</status>\n</task-notification>"}}`
+}
+
+func taskNotificationQueued(op, taskID string) string {
+	return `{"type":"queue-operation","operation":"` + op + `","content":"<task-notification>\n<task-id>` + taskID + `</task-id>\n<status>completed</status>\n</task-notification>"}`
 }
 
 // pendingTasks считает задачи по транскрипту и проваливает тест, если он нечитаем
@@ -270,5 +279,47 @@ func TestPendingBackgroundTasks_MonitorEndsByStatus(t *testing.T) {
 	lines = append(lines, taskNotification("bm0n1t0r"))
 	if got := pendingTasks(t, writeTranscript(t, lines)); got != 0 {
 		t.Errorf("монитор завершён со статусом, насчитано %d", got)
+	}
+}
+
+// Уведомление, пришедшее посреди хода, ложится в транскрипт не user-записью,
+// а вложением и записями очереди — задача завершена по любой из них
+func TestPendingBackgroundTasks_MidTurnNotificationCompletes(t *testing.T) {
+	cases := map[string]string{
+		"attachment":    taskNotificationAttachment("bm1dturn"),
+		"queue enqueue": taskNotificationQueued("enqueue", "bm1dturn"),
+		"queue remove":  taskNotificationQueued("remove", "bm1dturn"),
+	}
+	for name, record := range cases {
+		t.Run(name, func(t *testing.T) {
+			var lines []string
+			lines = append(lines, bashLaunch("toolu_01", "bm1dturn")...)
+			lines = append(lines, bashLaunch("toolu_02", "b0ther")...)
+			lines = append(lines, record)
+			if got := pendingTasks(t, writeTranscript(t, lines)); got != 1 {
+				t.Errorf("после %s должна остаться одна задача, насчитано %d", name, got)
+			}
+		})
+	}
+}
+
+// Событие монитора во вложении — тоже не завершение
+func TestPendingBackgroundTasks_MonitorEventAttachmentKeepsAlive(t *testing.T) {
+	var lines []string
+	lines = append(lines, monitorLaunch("toolu_01", "bm0n1t0r")...)
+	lines = append(lines, `{"type":"attachment","attachment":{"type":"queued_command","commandMode":"task-notification","prompt":"<task-notification>\n<task-id>bm0n1t0r</task-id>\n<summary>Monitor event</summary>\n<event>line</event>\n</task-notification>"}}`)
+	if got := pendingTasks(t, writeTranscript(t, lines)); got != 1 {
+		t.Errorf("монитор после события во вложении должен быть жив, насчитано %d", got)
+	}
+}
+
+// Запрос человека с картинкой — вложение того же вида, но со списком блоков;
+// такая запись читаема и задач не трогает
+func TestPendingBackgroundTasks_ImagePromptAttachmentReadable(t *testing.T) {
+	var lines []string
+	lines = append(lines, bashLaunch("toolu_01", "b1mage")...)
+	lines = append(lines, `{"type":"attachment","attachment":{"type":"queued_command","commandMode":"prompt","prompt":[{"type":"text","text":"[Image #1] смотри"},{"type":"image","source":{}}]}}`)
+	if got := pendingTasks(t, writeTranscript(t, lines)); got != 1 {
+		t.Errorf("вложение с картинкой не завершение, насчитано %d", got)
 	}
 }
