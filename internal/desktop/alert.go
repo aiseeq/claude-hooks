@@ -139,8 +139,9 @@ func DeliverInBackground(executable, watchCommand string, alert Alert) error {
 		return fmt.Errorf("failed to start notification watcher: %w", err)
 	}
 
-	// Процесс переживёт хук: ждать его завершения нельзя, но и зомби оставлять не нужно
-	go cmd.Wait()
+	// Процесс переживёт хук: ждать его завершения нельзя, но и зомби оставлять
+	// не нужно; его код возврата никому не нужен
+	go func() { _ = cmd.Wait() }()
 
 	return nil
 }

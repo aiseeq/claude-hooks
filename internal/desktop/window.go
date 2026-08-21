@@ -31,7 +31,8 @@ func ActivateWindowByPIDs(conn *dbus.Conn, pids []int) error {
 	if err != nil {
 		return err
 	}
-	defer os.Remove(scriptPath)
+	// Временный файл во /tmp: неудалённый остаток безвреден
+	defer func() { _ = os.Remove(scriptPath) }()
 
 	// Имя плагина уникально для процесса: параллельные хуки не мешают друг другу
 	pluginName := "claude-hooks-activate-" + strconv.Itoa(os.Getpid())
@@ -56,10 +57,14 @@ func writeActivationScript(pids []int) (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("failed to create script file: %w", err)
 	}
-	defer file.Close()
 
-	if _, err := file.WriteString(activationScript(pids)); err != nil {
-		os.Remove(file.Name())
+	// Закрытие после записи проверяется: незаписанный скрипт KWin молча не выполнит
+	_, err = file.WriteString(activationScript(pids))
+	if closeErr := file.Close(); err == nil {
+		err = closeErr
+	}
+	if err != nil {
+		_ = os.Remove(file.Name())
 		return "", fmt.Errorf("failed to write script: %w", err)
 	}
 

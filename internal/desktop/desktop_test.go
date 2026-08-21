@@ -63,7 +63,7 @@ func TestWriteActivationScript(t *testing.T) {
 	if err != nil {
 		t.Fatalf("не удалось записать скрипт: %v", err)
 	}
-	defer os.Remove(path)
+	defer func() { _ = os.Remove(path) }()
 
 	content, err := os.ReadFile(path)
 	if err != nil {

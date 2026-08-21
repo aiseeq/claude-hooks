@@ -69,10 +69,13 @@ func WaitForAction(ctx context.Context, conn *dbus.Conn, id uint32) (bool, error
 	); err != nil {
 		return false, fmt.Errorf("failed to subscribe to notification signals: %w", err)
 	}
-	defer conn.RemoveMatchSignal(
-		dbus.WithMatchObjectPath(notifyPath),
-		dbus.WithMatchInterface(notifyIface),
-	)
+	// Подписка умирает вместе с соединением хука — сбой отписки ничего не меняет
+	defer func() {
+		_ = conn.RemoveMatchSignal(
+			dbus.WithMatchObjectPath(notifyPath),
+			dbus.WithMatchInterface(notifyIface),
+		)
+	}()
 
 	signals := make(chan *dbus.Signal, 16)
 	conn.Signal(signals)
