@@ -1,0 +1,91 @@
+schema: 1
+version:
+  mode: git-tag
+gate:
+  - task: smoke
+
+tools:
+  glint:
+    go_install: github.com/aiseeq/glint@v1.4.2
+    check: [glint, rules]
+    expect: fallback-return
+
+tasks:
+  build:
+    desc: собрать бинарь в bin/
+    run:
+      - sh: |
+          set -eu
+          mkdir -p bin
+          version=$(git describe --tags --always --dirty 2>/dev/null || echo "dev")
+          go build -ldflags "-X main.Version=$version" -o bin/claude-hooks ./cmd/claude-hooks
+  install:
+    desc: установить бинарь и конфигурацию в ~/.claude/hooks
+    deps: [build]
+    run:
+      # Замена через переименование: прямая перезапись падает с "Text file busy",
+      # пока работает фоновый процесс уведомления
+      - sh: |
+          set -eu
+          dir="$HOME/.claude/hooks"
+          config="$dir/config.yaml"
+          mkdir -p "$dir" "$HOME/.claude/logs"
+          cp bin/claude-hooks "$dir/claude-hooks.new"
+          mv -f "$dir/claude-hooks.new" "$dir/claude-hooks"
+          if [ -f "$config" ]; then
+            cp configs/hooks.yaml "$config.new"
+            echo "Конфигурация сохранена: существующий $config не изменён"
+            echo "Новая версия: $config.new"
+          else
+            cp configs/hooks.yaml "$config"
+            echo "Конфигурация создана: $config"
+          fi
+          echo "Бинарь установлен: $dir/claude-hooks"
+          echo ""
+          echo "Добавь блок hooks из configs/settings-snippet.json в ~/.claude/settings.json"
+  uninstall:
+    desc: удалить установленный бинарь (конфигурация остаётся)
+    run:
+      - sh: |
+          set -eu
+          rm -f "$HOME/.claude/hooks/claude-hooks"
+          echo "Удалён $HOME/.claude/hooks/claude-hooks (конфигурация оставлена)"
+  test:
+    desc: тесты (graft test -- -run TestX)
+    run: ['go test {args} ./...']
+  test-race:
+    desc: тесты с детектором гонок
+    run: [go test -race ./...]
+  cover:
+    desc: покрытие тестами
+    run:
+      - go test -coverprofile=coverage.out ./...
+      - sh: go tool cover -func=coverage.out | tail -1
+  fmt:
+    desc: отформатировать код
+    run: [gofmt -w .]
+  lint:
+    desc: go vet и golangci-lint, если установлен
+    run:
+      - go vet ./...
+      - sh: |
+          if command -v golangci-lint >/dev/null 2>&1; then
+            golangci-lint run
+          else
+            echo "golangci-lint не установлен, выполнен только go vet"
+          fi
+  glint:
+    desc: проверить код glint
+    run: [glint check .]
+  clean:
+    desc: удалить артефакты сборки
+    run: [rm -rf bin coverage.out]
+  describe:
+    desc: версия, которую build вшивает в бинарь (git describe)
+    run:
+      - sh: git describe --tags --always --dirty 2>/dev/null || echo "dev"
+  smoke:
+    desc: гейт коммита, сборка и тесты
+    run:
+      - go build ./...
+      - go test ./...

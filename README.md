@@ -18,10 +18,13 @@
 
 ## Установка
 
+Сборка идёт через [graft](https://github.com/aiseeq/graft) (задачи в `.graft.yaml`):
+
 ```bash
+go install github.com/aiseeq/graft@v0.4.0
 git clone https://github.com/aiseeq/claude-hooks.git
 cd claude-hooks
-make install
+graft install
 ```
 
 Устанавливает бинарь в `~/.claude/hooks/claude-hooks` и конфигурацию в `~/.claude/hooks/config.yaml`.
@@ -240,13 +243,16 @@ Claude Code передаёт хуку JSON на stdin и интерпретир�
 ## Разработка
 
 ```bash
-make build      # сборка
-make test       # тесты
-make test-race  # тесты с детектором гонок
-make cover      # покрытие
-make lint       # go vet + golangci-lint
-make glint      # glint
-make fmt        # форматирование
+graft init       # один раз после клона: git-хуки, проверка glint
+graft build      # сборка в bin/
+graft test       # тесты; graft test -- -run TestX
+graft test-race  # тесты с детектором гонок
+graft cover      # покрытие
+graft lint       # go vet + golangci-lint
+graft glint      # glint
+graft fmt        # форматирование
+graft help       # все задачи
+graft commit -m "fix: ..."  # гейт (сборка и тесты), коммит, push
 ```
 
 ## Требования
