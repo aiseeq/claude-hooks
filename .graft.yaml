@@ -6,7 +6,7 @@ gate:
 
 tools:
   glint:
-    go_install: github.com/aiseeq/glint@v1.4.2
+    go_install: github.com/aiseeq/glint@v1.4.3
     check: [glint, rules]
     expect: fallback-return
 
