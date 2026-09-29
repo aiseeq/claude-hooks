@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"regexp"
+	"slices"
 	"strings"
 
 	"github.com/aiseeq/claude-hooks/internal/core"
@@ -22,19 +23,6 @@ var jiraWriteRequest = regexp.MustCompile(`(?i)--data(?:-binary|-raw)?\b|(?:^|\s
 
 // maxPayloadFileSize файл больше этого размера телом комментария не является
 const maxPayloadFileSize = 1 << 20
-
-// jiraStyleMarker признак текста, написанного агентом мимо правил write-as-user
-type jiraStyleMarker struct {
-	regexp      *regexp.Regexp
-	description string
-}
-
-var jiraStyleMarkers = []jiraStyleMarker{
-	{regexp.MustCompile("—"), "длинное тире"},
-	{regexp.MustCompile(`\\u2014`), "длинное тире в escape-форме"},
-	{regexp.MustCompile(`\*\*[^*\n]+\*\*`), "markdown-жирный"},
-	{regexp.MustCompile(`(?m)^#{1,6}\s`), "markdown-заголовок"},
-}
 
 // JiraStyleTool блокирует отправку комментария в Jira с маркерами агентского стиля
 type JiraStyleTool struct {
@@ -71,26 +59,48 @@ func (t *JiraStyleTool) ValidateTool(_ context.Context, input *core.ToolInput) (
 		texts = append(texts, body)
 	}
 
+	// Раскодированные строки JSON идут первыми: фрагмент в подсказке из них
+	// читается без JSON-обвязки. Начала текстов для приветствия: строки JSON
+	// и файлы тела запроса, команда целиком начинается с curl
+	var literals []string
+	for _, text := range texts {
+		literals = append(literals, jsonStrings(text)...)
+	}
+	starts := append(slices.Clone(literals), texts[1:]...)
+	everywhere := append(slices.Clone(literals), texts...)
+
 	var violations []core.Violation
+	var suggestions []string
 	for _, marker := range jiraStyleMarkers {
-		for _, text := range texts {
-			if !marker.regexp.MatchString(text) {
+		scope := everywhere
+		if marker.startsOnly {
+			scope = starts
+		}
+		for _, text := range scope {
+			fragment := marker.find(text)
+			if fragment == "" {
 				continue
 			}
+			suggestion := fmt.Sprintf("%s: %q, нужно: %s", marker.description, strings.TrimSpace(fragment), marker.fix)
 			violations = append(violations, core.NewViolation(
 				"jira_comment_style",
-				fmt.Sprintf("В комментарии для Jira %s — признак текста мимо правил write-as-user", marker.description),
-				"Перепиши комментарий по скиллу write-as-user: без длинных тире, без markdown, разговорным текстом",
+				// Сообщение одно на все нарушения: ответ хука показывает
+				// первое, а список найденного идёт подсказками
+				"Комментарий для Jira написан мимо правил формы write-as-user, исправить:",
+				suggestion,
 				core.LevelCritical,
-				1,
+				0,
 				0,
 			))
+			suggestions = append(suggestions, suggestion)
 			break
 		}
 	}
+	if len(suggestions) > 0 {
+		suggestions = append(suggestions, "Перепиши комментарий по скиллу write-as-user и отправь заново")
+	}
 
-	// nil-di: safe — подсказка уже в каждом нарушении, отдельного списка нет
-	return core.NewValidationResult(len(violations) == 0, violations, nil), nil
+	return core.NewValidationResult(len(violations) == 0, violations, suggestions), nil
 }
 
 // readPayloadFile читает файл с телом запроса. Ошибка называет причину, по
