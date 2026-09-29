@@ -68,7 +68,6 @@ func execute() int {
 		newConfigCmd(),
 		newVersionCmd(),
 		newDeliverAlertCmd(),
-		newRefreshGitIndexCmd(),
 	)
 
 	if err := rootCmd.Execute(); err != nil {
@@ -534,18 +533,7 @@ func newStatusLineCmd() *cobra.Command {
 			if err != nil {
 				return fmt.Errorf("failed to create logger: %w", err)
 			}
-			executable, err := os.Executable()
-			if err != nil {
-				return fmt.Errorf("failed to locate own executable: %w", err)
-			}
-			// Фоновое обновление индекса читает ту же конфигурацию, что и строка статуса
-			command := []string{executable}
-			if configPath != "" {
-				command = append(command, "--config", configPath)
-			}
-			refresh := func(dir string) error { return statusline.StartIndexRefresh(command, dir) }
-
-			line, err := statusline.Render(cmd.Context(), os.Stdin, refresh, logger)
+			line, err := statusline.Render(cmd.Context(), os.Stdin, logger)
 			if err != nil {
 				return err
 			}
@@ -553,47 +541,6 @@ func newStatusLineCmd() *cobra.Command {
 			return nil
 		},
 	}
-}
-
-// newRefreshGitIndexCmd создает команду фонового обновления индекса git.
-// Строка статуса запускает её отдельным процессом, когда git status стал
-// медленным, и сама её не ждёт
-func newRefreshGitIndexCmd() *cobra.Command {
-	var dir string
-
-	cmd := &cobra.Command{
-		Use:    statusline.RefreshCommand,
-		Short:  "Обновить индекс git для строки статуса",
-		Hidden: true,
-		RunE: func(cmd *cobra.Command, args []string) error {
-			config, err := core.LoadConfig(configPath)
-			if err != nil {
-				return fmt.Errorf("failed to load config: %w", err)
-			}
-			logger, err := core.NewLogger(config.Logger)
-			if err != nil {
-				return fmt.Errorf("failed to create logger: %w", err)
-			}
-
-			if dir == "" {
-				return fmt.Errorf("не задан --dir")
-			}
-
-			start := time.Now()
-			refreshed, err := statusline.RefreshIndex(cmd.Context(), dir)
-			if err != nil {
-				logger.Warn("git index refresh failed", "dir", dir, "error", err)
-				return err
-			}
-			if refreshed {
-				logger.Info("git index refreshed", "dir", dir, "ms", time.Since(start).Milliseconds())
-			}
-			return nil
-		},
-	}
-
-	cmd.Flags().StringVar(&dir, "dir", "", "каталог репозитория")
-	return cmd
 }
 
 // newVersionCmd создает команду вывода версии

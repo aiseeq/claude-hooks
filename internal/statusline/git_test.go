@@ -6,7 +6,6 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
-	"syscall"
 	"testing"
 )
 
@@ -102,34 +101,6 @@ func TestParseStatusV2(t *testing.T) {
 }
 
 // Одно обновление индекса на репозиторий: второе при занятой блокировке выходит сразу
-func TestRefreshIndex(t *testing.T) {
-	t.Setenv("XDG_RUNTIME_DIR", t.TempDir())
-	repo := initRepo(t)
-
-	refreshed, err := RefreshIndex(context.Background(), repo)
-	if err != nil || !refreshed {
-		t.Fatalf("обновление индекса: refreshed=%v err=%v", refreshed, err)
-	}
-
-	lockPath, err := refreshLockPath(repo)
-	if err != nil {
-		t.Fatal(err)
-	}
-	lock, err := os.OpenFile(lockPath, os.O_RDWR, 0o644)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer lock.Close()
-	if err := syscall.Flock(int(lock.Fd()), syscall.LOCK_EX|syscall.LOCK_NB); err != nil {
-		t.Fatal(err)
-	}
-
-	refreshed, err = RefreshIndex(context.Background(), repo)
-	if err != nil || refreshed {
-		t.Errorf("при занятой блокировке обновление не запускается: refreshed=%v err=%v", refreshed, err)
-	}
-}
-
 // runGit выполняет git без пользовательских настроек, прерывая тест при ошибке
 func runGit(t *testing.T, dir string, args ...string) {
 	t.Helper()

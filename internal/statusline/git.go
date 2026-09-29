@@ -14,12 +14,6 @@ import (
 // и подвисший git не должен задерживать вывод
 const gitTimeout = 300 * time.Millisecond
 
-// slowStatusThreshold — статус дольше этого значит, что индекс устарел: git
-// заново читает файлы, чьи отметки времени разошлись с индексом (checkout,
-// сборка, переписавшая файлы). В обычном состоянии большой репозиторий
-// отвечает за десятки миллисекунд
-const slowStatusThreshold = 150 * time.Millisecond
-
 // GitStatus описывает состояние репозитория
 type GitStatus struct {
 	Branch   string
@@ -32,9 +26,6 @@ type GitStatus struct {
 	// и Ahead/Behind нулевые не потому, что дерево чистое, а потому, что git
 	// не успел ответить
 	Counted bool
-	// Slow — статус не уложился в slowStatusThreshold или в таймаут: индекс
-	// пора обновить, см. StartIndexRefresh
-	Slow bool
 }
 
 // ReadGitStatus собирает данные о репозитории в указанном каталоге.
@@ -73,13 +64,10 @@ func ReadGitStatus(ctx context.Context, dir string) (GitStatus, error) {
 	// пишется (--no-optional-locks): строка статуса не должна отнимать
 	// index.lock у git-команд человека и Claude. Неотслеживаемые файлы
 	// пропускаются: в больших деревьях их обход заметно дороже
-	start := time.Now()
 	porcelain, err := gitOutput(gitCtx, dir, "--no-optional-locks", "status", "--porcelain=v2", "--branch", "--untracked-files=no")
 	if err != nil {
-		status.Slow = gitCtx.Err() != nil
 		return status, err
 	}
-	status.Slow = time.Since(start) > slowStatusThreshold
 
 	if status.Changed, status.Ahead, status.Behind, err = parseStatusV2(porcelain); err != nil {
 		return status, err

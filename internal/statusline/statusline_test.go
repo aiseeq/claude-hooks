@@ -166,12 +166,7 @@ func TestBuildFitsSingleLine(t *testing.T) {
 	input.Model.DisplayName = "Opus 5 (1M context)"
 	input.ContextWindow.UsedPercentage = 47
 
-	// Каталог вне репозитория: обновлять нечего
-	refresh := func(dir string) error {
-		t.Errorf("обновление индекса вне репозитория: %s", dir)
-		return nil
-	}
-	line, title := build(context.Background(), input, refresh, testLogger(t))
+	line, title := build(context.Background(), input, testLogger(t))
 
 	if strings.Contains(line, "\n") {
 		t.Errorf("строка статуса должна умещаться в одну строку: %q", line)

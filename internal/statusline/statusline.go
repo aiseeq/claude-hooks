@@ -69,8 +69,7 @@ type Input struct {
 // Render читает данные Claude Code и возвращает строку статуса.
 // Попутно обновляется заголовок окна: строка статуса видна только в активном
 // окне, а по заголовку сессию видно в панели задач и в переключателе окон.
-// refreshIndex запускает фоновое обновление индекса, когда git status медленный
-func Render(ctx context.Context, stdin io.Reader, refreshIndex IndexRefresher, logger core.Logger) (string, error) {
+func Render(ctx context.Context, stdin io.Reader, logger core.Logger) (string, error) {
 	data, err := io.ReadAll(stdin)
 	if err != nil {
 		return "", fmt.Errorf("failed to read status line input: %w", err)
@@ -81,7 +80,7 @@ func Render(ctx context.Context, stdin io.Reader, refreshIndex IndexRefresher, l
 		return "", fmt.Errorf("failed to parse status line input: %w", err)
 	}
 
-	line, title := build(ctx, input, refreshIndex, logger)
+	line, title := build(ctx, input, logger)
 	if err := desktop.SetTerminalTitle(title); err != nil {
 		logger.Warn("terminal title not set", "error", err)
 	}
@@ -92,7 +91,7 @@ func Render(ctx context.Context, stdin io.Reader, refreshIndex IndexRefresher, l
 // build собирает строку статуса и заголовок окна. Сбои источников (состояние
 // сессии, git) строку не срывают: она рисуется по тому, что удалось прочитать,
 // а сбой уходит в лог
-func build(ctx context.Context, input Input, refreshIndex IndexRefresher, logger core.Logger) (string, string) {
+func build(ctx context.Context, input Input, logger core.Logger) (string, string) {
 	dir := workingDir(input)
 	state, err := core.LoadSessionState(input.SessionID)
 	if err != nil {
@@ -101,11 +100,6 @@ func build(ctx context.Context, input Input, refreshIndex IndexRefresher, logger
 	git, err := ReadGitStatus(ctx, dir)
 	if err != nil {
 		logger.Warn("git status incomplete", "dir", dir, "error", err)
-	}
-	if git.Slow {
-		if err := refreshIndex(dir); err != nil {
-			logger.Warn("git index refresh not started", "dir", dir, "error", err)
-		}
 	}
 
 	// Путь не показывается: плашка уже называет проект, а полный путь
