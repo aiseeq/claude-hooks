@@ -2,18 +2,8 @@
   "hooks": {
     "PreToolUse": [
       {
-        "matcher": "Write|Edit|MultiEdit",
-        "hooks": [{ "type": "command", "command": "$HOME/.claude/hooks/claude-hooks pre-tool-use", "timeout": 5 }]
-      },
-      {
         "matcher": "Bash",
         "hooks": [{ "type": "command", "command": "$HOME/.claude/hooks/claude-hooks pre-tool-use", "timeout": 3 }]
-      }
-    ],
-    "PostToolUse": [
-      {
-        "matcher": "Write|Edit|MultiEdit",
-        "hooks": [{ "type": "command", "command": "$HOME/.claude/hooks/claude-hooks post-tool-use", "timeout": 5 }]
       }
     ],
     "UserPromptSubmit": [

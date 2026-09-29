@@ -1,10 +1,4 @@
 # Конфигурация claude-hooks
-#
-# exceptions поддерживает:
-#   - glob по имени файла: "*_test.go", "test-config.*"
-#   - glob по пути:        "src/*/generated.go"
-#   - подстроку пути:      "/cmd/", "/vendor/"
-# Тестовые файлы и документация исключаются автоматически.
 
 logger:
   level: "info" # debug, info, warn, error
@@ -13,43 +7,11 @@ logger:
   file: "~/.claude/logs/claude-hooks.log"
   max_size_mb: 16 # ротация лога при превышении размера, 0 — отключить
 
-# Валидаторы содержимого файлов: блокируют запись при нарушении
-validators:
-  # Запрещает аварийное завершение процесса вне точки входа
-  runtime_exit:
-    enabled: true
-    go_files_only: true
-    exceptions:
-      - "/cmd/"
-      - "main.go"
-
-  # Запрещает секреты в исходном коде
-  secrets:
-    enabled: true
-    exceptions:
-      - "test-config.*"
-    # Паттерны можно переопределить:
-    # jwt_pattern: "..."
-    # wallet_pattern: "..."
-    # api_key_pattern: "..."
-
-# Инструменты, привязанные к конкретным операциям Claude Code
 tools:
-  # Блокирует опасные bash-команды. blocked_patterns — регулярные выражения;
-  # если список задан, он полностью заменяет встроенный набор
-  bash:
-    enabled: true
-
   # Блокирует отправку комментария в Jira с маркерами агентского стиля
   # (длинное тире, markdown) — текст обязан пройти через скилл write-as-user
   jira_style:
     enabled: true
-
-  # Форматирует файлы после записи
-  formatter:
-    enabled: true
-    go_format: true # gofmt
-    ts_format: true # prettier
 
   # Уведомления: Claude Code закончил работу или ждёт ответа
   notifier:

@@ -6,7 +6,7 @@ CONFIG_FILE=$(INSTALL_DIR)/config.yaml
 
 LDFLAGS=-ldflags "-X main.Version=$(VERSION)"
 
-.PHONY: all build install uninstall test test-race cover fmt lint version help smoke commit
+.PHONY: all build install uninstall test test-race cover fmt lint glint version help smoke commit
 
 all: build
 
@@ -56,6 +56,9 @@ lint: ## Проверить код линтером
 	else \
 		echo "golangci-lint не установлен, выполнен только go vet"; \
 	fi
+
+glint: ## Проверить код glint (~/bin/glint)
+	glint check .
 
 clean: ## Удалить артефакты сборки
 	rm -rf $(BUILD_DIR) coverage.out

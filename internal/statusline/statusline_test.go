@@ -68,13 +68,18 @@ func TestGitSummary(t *testing.T) {
 	}{
 		{
 			name:     "чистый репозиторий",
-			git:      GitStatus{IsRepo: true, Branch: "main", RepoClean: true},
+			git:      GitStatus{IsRepo: true, Branch: "main", Counted: true},
 			expected: "main",
 		},
 		{
 			name:     "изменения и расхождение с remote",
-			git:      GitStatus{IsRepo: true, Branch: "feature", Changed: 3, Ahead: 2, Behind: 1},
+			git:      GitStatus{IsRepo: true, Branch: "feature", Changed: 3, Ahead: 2, Behind: 1, Counted: true},
 			expected: "feature ●3 ↑2 ↓1",
+		},
+		{
+			name:     "git не успел посчитать",
+			git:      GitStatus{IsRepo: true, Branch: "main"},
+			expected: "main …",
 		},
 		{
 			name:     "отделённая HEAD",
@@ -127,7 +132,7 @@ func TestDetails(t *testing.T) {
 	input.Cost.LinesAdded = 412
 	input.Cost.LinesRemoved = 87
 
-	parts := details(input, GitStatus{IsRepo: true, Branch: "main", RepoClean: true})
+	parts := details(input, GitStatus{IsRepo: true, Branch: "main", Counted: true})
 
 	expected := []string{"main", "Opus 5·high", "ctx ▓▓▓▓░░░░░░ 47%", "+412 −87"}
 	if len(parts) != len(expected) {
@@ -161,7 +166,12 @@ func TestBuildFitsSingleLine(t *testing.T) {
 	input.Model.DisplayName = "Opus 5 (1M context)"
 	input.ContextWindow.UsedPercentage = 47
 
-	line, title := build(context.Background(), input, testLogger(t))
+	// Каталог вне репозитория: обновлять нечего
+	refresh := func(dir string) error {
+		t.Errorf("обновление индекса вне репозитория: %s", dir)
+		return nil
+	}
+	line, title := build(context.Background(), input, refresh, testLogger(t))
 
 	if strings.Contains(line, "\n") {
 		t.Errorf("строка статуса должна умещаться в одну строку: %q", line)

@@ -83,3 +83,14 @@ func TestJiraStyleIgnoresReadingComments(t *testing.T) {
 	// GET за комментариями не содержит тела, но тире в остальной команде не повод блокировать чтение
 	t.Fatal("чтение комментариев не должно блокироваться")
 }
+
+// testLogger — логгер для тестов пакета: пишет в stderr, который go test
+// показывает только при провале
+func testLogger(t *testing.T) core.Logger {
+	t.Helper()
+	logger, err := core.NewLogger(core.LoggerConfig{Level: "debug"})
+	if err != nil {
+		t.Fatalf("не удалось создать логгер: %v", err)
+	}
+	return logger
+}

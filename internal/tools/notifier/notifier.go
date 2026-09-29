@@ -1,7 +1,6 @@
 package notifier
 
 import (
-	"context"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -10,7 +9,6 @@ import (
 
 	"github.com/aiseeq/claude-hooks/internal/core"
 	"github.com/aiseeq/claude-hooks/internal/desktop"
-	"github.com/aiseeq/claude-hooks/internal/tools"
 )
 
 // WatchCommand имя скрытой подкоманды, которая доставляет оповещение в фоне
@@ -22,102 +20,90 @@ const (
 	notificationTimeout = 30 * time.Second
 )
 
-// Tool уведомляет о завершении работы и о вопросах Claude Code
-type Tool struct {
-	*tools.BaseTool
+// Notifier показывает человеку, что сессия закончила работу или ждёт ответа:
+// заголовок окна, звук и уведомление с переходом к окну по клику
+type Notifier struct {
+	logger          core.Logger
 	sound           bool
 	desktop         bool
 	activateOnClick bool
 }
 
-// New создает инструмент уведомлений
-func New(config core.ToolConfig, logger core.Logger) (*Tool, error) {
-	return &Tool{
-		BaseTool:        tools.NewBaseTool("notifier", config.Enabled, []string{core.EventStop, core.EventNotification}, logger),
+// New создает notifier по конфигурации
+func New(config core.ToolConfig, logger core.Logger) *Notifier {
+	return &Notifier{
+		logger:          logger.With("tool", "notifier"),
 		sound:           config.Sound,
 		desktop:         config.Desktop,
 		activateOnClick: config.ActivateOnClick,
-	}, nil
+	}
 }
 
-// ValidateTool обрабатывает события сессии: завершение работы и запрос к пользователю
-func (t *Tool) ValidateTool(ctx context.Context, input *core.ToolInput) (*core.ValidationResult, error) {
-	if !t.IsEnabled() {
-		return &core.ValidationResult{IsValid: true}, nil
+// Announce доводит решение до человека. Заголовок окна меняется на каждом
+// переходе в «готово» или «ждёт ответа», даже без звонка: это подсказка в
+// панели задач. Звук и уведомление уходят в отдельный процесс — хук не ждёт
+// ни звука, ни клика
+func (n *Notifier) Announce(eventName string, input *core.ToolInput, decision Decision) error {
+	if decision.State != core.StateDone && decision.State != core.StateWaiting {
+		return nil
 	}
 
-	projectName := t.ProjectName(input)
-
-	alert, terminalTitle, ok := t.buildAlert(input, projectName)
-	if !ok {
-		return &core.ValidationResult{IsValid: true}, nil
+	projectName := n.ProjectName(input)
+	alert, terminalTitle, err := n.buildAlert(eventName, input, projectName)
+	if err != nil {
+		return err
 	}
 
-	// Заголовок окна — подсказка в списке окон и в панели задач; без него
-	// уведомление всё равно уходит
+	// Без заголовка уведомление всё равно уходит
 	if err := desktop.SetTerminalTitle(terminalTitle); err != nil {
-		t.Logger().Warn("terminal title not set", "error", err)
+		n.logger.Warn("terminal title not set", "error", err)
 	}
 
-	// Пока Claude ждёт, Claude Code напоминает о себе тем же событием.
-	// Человека уже позвали один раз, и повторный звонок только отвлекает:
-	// по вкладкам он пройдётся сам, когда освободится
-	if previous := core.PreviousStateFromContext(ctx); previous != core.StateWorking {
-		t.Logger().Debug("alert skipped: session already idle",
-			"event", input.ToolName,
-			"previous_state", string(previous),
-		)
-		return &core.ValidationResult{IsValid: true}, nil
+	if !decision.Alert || !(alert.Sound || alert.Desktop) {
+		return nil
+	}
+
+	executable, err := os.Executable()
+	if err != nil {
+		return fmt.Errorf("failed to locate own executable: %w", err)
+	}
+	if err := desktop.DeliverInBackground(executable, WatchCommand, alert); err != nil {
+		return err
 	}
 
 	// Info, а не Debug: по этой записи отличают уведомление хука от
 	// собственных уведомлений Claude Code — со стороны они неразличимы
-	t.Logger().Info("alert delivered",
-		"event", input.ToolName,
+	n.logger.Info("alert delivered",
+		"event", eventName,
 		"project", projectName,
 		"activate_pids", len(alert.ActivatePIDs),
 	)
-
-	// Доставка идёт в отдельном процессе: хук не ждёт ни звука, ни клика
-	if alert.Sound || alert.Desktop {
-		executable, err := os.Executable()
-		if err != nil {
-			return nil, fmt.Errorf("failed to locate own executable: %w", err)
-		}
-		if err := desktop.DeliverInBackground(executable, WatchCommand, alert); err != nil {
-			t.Logger().Warn("failed to deliver alert", "error", err)
-		}
-	}
-
-	return &core.ValidationResult{
-		IsValid:     true,
-		Suggestions: []string{fmt.Sprintf("Уведомления отправлены для проекта [%s]", projectName)},
-	}, nil
+	return nil
 }
 
 // buildAlert собирает оповещение под конкретное событие
-func (t *Tool) buildAlert(input *core.ToolInput, projectName string) (desktop.Alert, string, bool) {
+func (n *Notifier) buildAlert(eventName string, input *core.ToolInput, projectName string) (desktop.Alert, string, error) {
 	alert := desktop.Alert{
 		AppName:     "Claude Code",
 		Icon:        "utilities-terminal",
-		Sound:       t.sound,
-		Desktop:     t.desktop,
+		Sound:       n.sound,
+		Desktop:     n.desktop,
 		ActionLabel: "Перейти к окну",
 	}
 
-	if t.activateOnClick {
+	if n.activateOnClick {
 		// Окно принадлежит одному из предков: сам хук окна не имеет. Оборванная
 		// цепочка всё равно годится — окно может быть у собранной части
 		ancestors, err := desktop.ProcessAncestors(os.Getpid())
 		if err != nil {
-			t.Logger().Warn("process ancestry incomplete", "error", err)
+			n.logger.Warn("process ancestry incomplete", "error", err)
 		}
 		alert.ActivatePIDs = ancestors
 	}
 
 	var terminalTitle string
 
-	switch input.ToolName {
+	switch eventName {
 	case core.EventStop:
 		terminalTitle = fmt.Sprintf("✅ %s · готово", strings.ToUpper(projectName))
 		alert.Title = "Claude Code завершил работу"
@@ -135,22 +121,15 @@ func (t *Tool) buildAlert(input *core.ToolInput, projectName string) (desktop.Al
 		alert.Timeout = notificationTimeout
 
 	default:
-		return desktop.Alert{}, "", false
+		return desktop.Alert{}, "", fmt.Errorf("notifier does not handle event %q", eventName)
 	}
 
-	return alert, terminalTitle, true
-}
-
-// IsIdleReminder распознаёт минутное напоминание «Claude is waiting for your
-// input» (тип idle_prompt). Запрос разрешения инструменту им не является:
-// его глушить нельзя — без ответа человека сессия встанет
-func IsIdleReminder(message string) bool {
-	return strings.Contains(strings.ToLower(message), "waiting for your input")
+	return alert, terminalTitle, nil
 }
 
 // ProjectName определяет имя проекта: рабочая директория сессии — самый надёжный
 // источник, путь транскрипта используется как запасной вариант
-func (t *Tool) ProjectName(input *core.ToolInput) string {
+func (n *Notifier) ProjectName(input *core.ToolInput) string {
 	if input.CWD != "" {
 		return core.ProjectNameForDir(input.CWD)
 	}

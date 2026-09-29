@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"strings"
 	"time"
 
 	"github.com/spf13/cobra"
@@ -45,7 +46,7 @@ func execute() int {
 	rootCmd := &cobra.Command{
 		Use:           "claude-hooks",
 		Short:         "Claude Code hooks processor",
-		Long:          "Обработчик хуков Claude Code: проверка операций перед выполнением, автоформатирование и уведомления.",
+		Long:          "Обработчик хуков Claude Code: уведомления о завершении и ожидании ответа, строка статуса, проверка стиля Jira-комментариев.",
 		SilenceUsage:  true,
 		SilenceErrors: true,
 		RunE: func(cmd *cobra.Command, args []string) error {
@@ -58,16 +59,16 @@ func execute() int {
 	rootCmd.PersistentFlags().DurationVar(&timeout, "timeout", 5*time.Second, "таймаут обработки")
 
 	rootCmd.AddCommand(
-		newHookCmd("pre-tool-use", "Обработать PreToolUse hook", &exitCode),
-		newHookCmd("post-tool-use", "Обработать PostToolUse hook", &exitCode),
-		newHookCmd("stop", "Обработать Stop hook", &exitCode),
-		newHookCmd("notification", "Обработать Notification hook", &exitCode),
+		newHookCmd(hookPreToolUse, "Обработать PreToolUse hook", &exitCode),
+		newHookCmd(hookStop, "Обработать Stop hook", &exitCode),
+		newHookCmd(hookNotification, "Обработать Notification hook", &exitCode),
 		newHookCmd(hookUserPromptSubmit, "Обработать UserPromptSubmit hook", &exitCode),
 		newNotifyCmd(),
 		newStatusLineCmd(),
 		newConfigCmd(),
 		newVersionCmd(),
 		newDeliverAlertCmd(),
+		newRefreshGitIndexCmd(),
 	)
 
 	if err := rootCmd.Execute(); err != nil {
@@ -79,6 +80,14 @@ func execute() int {
 
 	return exitCode
 }
+
+// Имена подкоманд хуков, как их вызывает ~/.claude/settings.json
+const (
+	hookPreToolUse       = "pre-tool-use"
+	hookStop             = "stop"
+	hookNotification     = "notification"
+	hookUserPromptSubmit = "user-prompt-submit"
+)
 
 // newHookCmd создает команду обработки хука, записывающую exit-код по указателю
 func newHookCmd(hookType, short string, exitCode *int) *cobra.Command {
@@ -95,12 +104,9 @@ func newHookCmd(hookType, short string, exitCode *int) *cobra.Command {
 
 // runHook выполняет основную логику хука
 func runHook(ctx context.Context, hookType string) (int, error) {
-	hookCtx, cancel := context.WithTimeout(ctx, timeout)
-	defer cancel()
-
-	input, err := readInput(os.Stdin, hookType)
+	data, err := io.ReadAll(os.Stdin)
 	if err != nil {
-		return exitError, err
+		return exitError, fmt.Errorf("failed to read input: %w", err)
 	}
 
 	config, err := core.LoadConfig(configPath)
@@ -113,44 +119,34 @@ func runHook(ctx context.Context, hookType string) (int, error) {
 		return exitError, fmt.Errorf("failed to create logger: %w", err)
 	}
 
-	// Остановка и минутное напоминание при живых фоновых задачах или взведённом
-	// будильнике /loop — не события для человека: Claude вернётся к работе сам,
-	// когда задача отчитается или будильник сработает. Пропускаются целиком,
-	// до записи состояния, — иначе «готово» или «ждёт» соврали бы строке
-	// статуса, а финальная остановка выглядела бы повтором и осталась без
-	// уведомления. Запрос разрешения проходит всегда: без ответа человека
-	// сессия встанет
-	if hookType == "stop" || hookType == "notification" {
-		// Решение по событию сессии разбирают постфактум («почему позвонило»,
-		// «почему не позвонило»), а событие приходит и уходит бесследно
-		resume := checkAutoResume(logger, hookType, input)
-		reason := resume.muteReason()
-		logDecision(logger, hookType, input, resume, reason)
-		if reason != "" {
-			return exitAllowed, nil
-		}
-	}
-
-	// Строка статуса рисуется отдельным процессом и о ходе сессии не знает —
-	// состояние для неё оставляют хуки. Предыдущее состояние идёт в контекст:
-	// по нему виден переход, а не только новое состояние. Сбой хранилища
-	// состояния операцию не блокирует: строка статуса — не повод ломать хук
-	previous, err := core.LoadSessionState(input.SessionID)
-	if err != nil {
-		logger.Warn("session state unavailable", "session", input.SessionID, "error", err)
-	}
-	hookCtx = core.WithPreviousState(hookCtx, previous)
-	if state, ok := hookStates[hookType]; ok {
-		if err := core.SaveSessionState(input.SessionID, state); err != nil {
-			logger.Warn("session state not saved", "session", input.SessionID, "error", err)
-		}
-	}
-
-	// Отправка запроса ничего не проверяет: она лишь отмечает, что работа
-	// возобновилась, и без неё ответ без единого вызова инструмента остался бы
-	// незамеченным
-	if hookType == hookUserPromptSubmit {
+	switch hookType {
+	case hookPreToolUse:
+		hookCtx, cancel := context.WithTimeout(ctx, timeout)
+		defer cancel()
+		return runPreToolUse(hookCtx, data, config, logger)
+	case hookUserPromptSubmit:
+		// Отправка запроса ничего не проверяет: она лишь отмечает, что работа
+		// возобновилась, и без неё ответ без единого вызова инструмента остался
+		// бы незамеченным
+		input := parseSessionInput(logger, hookType, data)
+		saveState(logger, input.SessionID, core.StateWorking)
 		return exitAllowed, nil
+	case hookStop:
+		runSessionEvent(core.EventStop, data, config, logger)
+		return exitAllowed, nil
+	case hookNotification:
+		runSessionEvent(core.EventNotification, data, config, logger)
+		return exitAllowed, nil
+	default:
+		return exitError, fmt.Errorf("unknown hook type: %s", hookType)
+	}
+}
+
+// runPreToolUse прогоняет вызов инструмента через проверки
+func runPreToolUse(ctx context.Context, data []byte, config *core.Config, logger core.Logger) (int, error) {
+	input, err := core.ParseToolInput(data)
+	if err != nil {
+		return exitError, fmt.Errorf("failed to parse input: %w", err)
 	}
 
 	engine, err := processor.New(config, logger)
@@ -158,22 +154,9 @@ func runHook(ctx context.Context, hookType string) (int, error) {
 		return exitError, fmt.Errorf("failed to create processor: %w", err)
 	}
 
-	var response *core.HookResponse
-	switch hookType {
-	case "pre-tool-use":
-		response, err = engine.ProcessPreToolUse(hookCtx, input)
-	case "post-tool-use":
-		response, err = engine.ProcessPostToolUse(hookCtx, input)
-	case "stop":
-		response, err = engine.ProcessStop(hookCtx, input)
-	case "notification":
-		response, err = engine.ProcessNotification(hookCtx, input)
-	default:
-		return exitError, fmt.Errorf("unknown hook type: %s", hookType)
-	}
-
+	response, err := engine.ProcessPreToolUse(ctx, input)
 	if err != nil {
-		logger.Error("hook processing failed", "hook_type", hookType, "error", err)
+		logger.Error("hook processing failed", "hook_type", hookPreToolUse, "error", err)
 		return exitError, err
 	}
 
@@ -186,38 +169,13 @@ func runHook(ctx context.Context, hookType string) (int, error) {
 	return exitBlocked, nil
 }
 
-// autoResume — признаки того, что сессия вернётся к работе сама и звать
-// человека не нужно
-type autoResume struct {
-	// applicable — событие вообще подлежит глушению: остановка или минутное
-	// напоминание об ожидании; запрос разрешения проходит всегда
-	applicable   bool
-	printMode    bool
-	pendingTasks int
-	wakeupArmed  bool
-}
-
-// muteReason называет причину глушения; пустая строка означает «не глушить»
-func (r autoResume) muteReason() string {
-	switch {
-	case r.printMode:
-		return "неинтерактивная сессия claude -p"
-	case !r.applicable:
-		return ""
-	case r.pendingTasks > 0:
-		return fmt.Sprintf("живых фоновых задач: %d", r.pendingTasks)
-	case r.wakeupArmed:
-		return "взведён будильник /loop"
-	default:
-		return ""
-	}
-}
-
-// checkAutoResume собирает признаки самовозобновления сессии. Сбой источника
-// (нечитаемый /proc или транскрипт) уходит в лог, а признак остаётся в
-// значении «не глушить»: лишний звонок лучше пропущенного
-func checkAutoResume(logger core.Logger, hookType string, input *core.ToolInput) autoResume {
-	var resume autoResume
+// runSessionEvent обрабатывает остановку и уведомление Claude Code. Всё
+// нужное приходит в stdin: транскрипт не читается, звук и уведомление уходят
+// в отдельный процесс, поэтому хук укладывается в миллисекунды. Сбои здесь
+// только логируются: событие сессии нечего блокировать, а ошибка хука
+// показалась бы человеку в интерфейсе на каждой остановке
+func runSessionEvent(eventName string, data []byte, config *core.Config, logger core.Logger) {
+	input := parseSessionInput(logger, eventName, data)
 
 	// Неинтерактивную сессию человек не ждёт вовсе — ни её остановку, ни её
 	// вопросы: ответить в неё всё равно некому
@@ -225,93 +183,107 @@ func checkAutoResume(logger core.Logger, hookType string, input *core.ToolInput)
 	if err != nil {
 		logger.Warn("session mode unknown, assuming interactive", "error", err)
 	}
-	resume.printMode = printMode
-
-	switch hookType {
-	case "stop":
-		resume.applicable = true
-	case "notification":
-		resume.applicable = notifier.IsIdleReminder(input.Message)
-	}
-	if !resume.applicable || resume.printMode {
-		return resume
+	if printMode {
+		logger.Info("alert muted", "hook", eventName, "reason", "неинтерактивная сессия claude -p")
+		return
 	}
 
-	resume.pendingTasks, err = core.PendingBackgroundTasks(input.TranscriptPath)
+	// Строка статуса рисуется отдельным процессом и о ходе сессии не знает —
+	// состояние для неё оставляют хуки. Предыдущее состояние нужно решению:
+	// по нему виден переход, а не только новое состояние
+	previous, err := core.LoadSessionState(input.SessionID)
 	if err != nil {
-		logger.Warn("background task count may be incomplete", "transcript", input.TranscriptPath, "error", err)
+		logger.Warn("session state unavailable", "session", input.SessionID, "error", err)
 	}
-	resume.wakeupArmed, err = core.AwaitingScheduledWakeup(input.TranscriptPath)
+
+	event := notifier.Event{Name: eventName, Input: input, Previous: previous}
+	if eventName == core.EventStop && input.BackgroundTasks != nil {
+		active, err := core.ActiveBackgroundTasks(input.SessionID, *input.BackgroundTasks, time.Now())
+		if err != nil {
+			logger.Warn("background task bookkeeping failed", "session", input.SessionID, "error", err)
+		}
+		event.ActiveTasks = len(active)
+	}
+
+	decision := notifier.Decide(event)
+	logDecision(logger, event, decision)
+
+	if decision.State != "" {
+		saveState(logger, input.SessionID, decision.State)
+	}
+
+	toolConfig, exists := config.Tools["notifier"]
+	if !exists || !toolConfig.Enabled {
+		return
+	}
+	if err := notifier.New(toolConfig, logger).Announce(eventName, input, decision); err != nil {
+		logger.Warn("failed to deliver alert", "hook", eventName, "error", err)
+	}
+}
+
+// parseSessionInput разбирает вход события сессии. Нечитаемый вход — ошибка
+// в логе, но не повод молчать: уведомить можно и без деталей события
+func parseSessionInput(logger core.Logger, hookType string, data []byte) *core.ToolInput {
+	input, err := core.ParseToolInput(data)
 	if err != nil {
-		logger.Warn("wakeup check may be incomplete", "transcript", input.TranscriptPath, "error", err)
+		logger.Error("session event input unreadable, handling it without details", "hook", hookType, "error", err)
+		return &core.ToolInput{}
 	}
-	return resume
+	return input
+}
+
+// saveState запоминает состояние сессии для строки статуса и следующего
+// события. Сбой хранилища хук не срывает: строка статуса — не повод ломать хук
+func saveState(logger core.Logger, sessionID string, state core.SessionState) {
+	if err := core.SaveSessionState(sessionID, state); err != nil {
+		logger.Warn("session state not saved", "session", sessionID, "error", err)
+	}
 }
 
 // logDecision записывает решение по событию сессии вместе с тем, из чего оно
-// сделано: без пути транскрипта и счётчиков непонятно, глушение промахнулось
-// или сессии правда нечего ждать
-func logDecision(logger core.Logger, hookType string, input *core.ToolInput, resume autoResume, reason string) {
-	if reason != "" {
-		logger.Info("alert muted: session resumes on its own",
-			"hook", hookType, "reason", reason)
+// сделано: событие приходит и уходит бесследно, а разбирают его постфактум
+// («почему позвонило», «почему не позвонило»)
+func logDecision(logger core.Logger, event notifier.Event, decision notifier.Decision) {
+	input := event.Input
+	fields := []any{
+		"hook", event.Name,
+		"session", input.SessionID,
+		"previous_state", string(event.Previous),
+		"state", string(decision.State),
+	}
+
+	switch event.Name {
+	case core.EventStop:
+		fields = append(fields, "active_tasks", event.ActiveTasks)
+		if input.BackgroundTasks != nil {
+			fields = append(fields, "background_tasks", taskTypes(*input.BackgroundTasks))
+		}
+		if input.SessionCrons != nil {
+			fields = append(fields, "session_crons", len(*input.SessionCrons))
+		}
+	case core.EventNotification:
+		fields = append(fields, "notification_type", input.NotificationType)
+	}
+
+	if decision.Reason != "" {
+		fields = append(fields, "reason", decision.Reason)
+	}
+
+	if decision.Alert {
+		logger.Info("alert allowed", fields...)
 		return
 	}
-	logger.Info("alert allowed: nothing to wait for",
-		"hook", hookType,
-		"transcript", input.TranscriptPath,
-		"session", input.SessionID,
-		"pending_tasks", resume.pendingTasks,
-		"wakeup_armed", resume.wakeupArmed,
-	)
+	logger.Info("alert muted", fields...)
 }
 
-// hookUserPromptSubmit хук отправки запроса пользователем
-const hookUserPromptSubmit = "user-prompt-submit"
-
-// hookStates сопоставляет хук состоянию сессии, которое он подтверждает.
-//
-// Вызовы инструментов состояние не меняют, хотя и означают работу: их делают
-// и субагенты, в том числе фоновые. Такой вызов посреди ожидания выглядел бы
-// возобновлением работы, и следующее напоминание Claude Code снова зазвонило
-// бы. Границы хода задают только запрос человека и остановка
-var hookStates = map[string]core.SessionState{
-	hookUserPromptSubmit: core.StateWorking,
-	"stop":               core.StateDone,
-	"notification":       core.StateWaiting,
-}
-
-// sessionEvents события сессии, приходящие без tool_input:
-// имя инструмента для них задаёт сам хук
-var sessionEvents = map[string]string{
-	"stop":               core.EventStop,
-	"notification":       core.EventNotification,
-	hookUserPromptSubmit: core.EventUserPromptSubmit,
-}
-
-// readInput читает и разбирает данные хука из stdin.
-// Для событий сессии ошибка разбора не критична: уведомить можно и без деталей
-func readInput(stdin io.Reader, hookType string) (*core.ToolInput, error) {
-	data, err := io.ReadAll(stdin)
-	if err != nil {
-		return nil, fmt.Errorf("failed to read input: %w", err)
+// taskTypes перечисляет типы фоновых задач: shell, subagent, monitor…
+// Описания и команды в лог не идут
+func taskTypes(tasks []core.BackgroundTask) string {
+	types := make([]string, 0, len(tasks))
+	for _, task := range tasks {
+		types = append(types, task.Type)
 	}
-
-	event, isSessionEvent := sessionEvents[hookType]
-
-	input, err := core.ParseToolInput(data)
-	if err != nil {
-		if isSessionEvent {
-			return &core.ToolInput{ToolName: event}, nil
-		}
-		return nil, fmt.Errorf("failed to parse input: %w", err)
-	}
-
-	if isSessionEvent {
-		input.ToolName = event
-	}
-
-	return input, nil
+	return strings.Join(types, ",")
 }
 
 // printResponse выводит результат: stderr читает Claude Code при exit-коде 2
@@ -417,12 +389,7 @@ func showConfig() error {
 		fmt.Printf("Логи: %s (уровень %s)\n\n", config.Logger.Output, config.Logger.Level)
 	}
 
-	fmt.Println("Валидаторы:")
-	for name, validatorConfig := range config.Validators {
-		fmt.Printf("  %-20s %s\n", name, enabledLabel(validatorConfig.Enabled))
-	}
-
-	fmt.Println("\nИнструменты:")
+	fmt.Println("Инструменты:")
 	for name, toolConfig := range config.Tools {
 		fmt.Printf("  %-20s %s\n", name, enabledLabel(toolConfig.Enabled))
 	}
@@ -567,7 +534,18 @@ func newStatusLineCmd() *cobra.Command {
 			if err != nil {
 				return fmt.Errorf("failed to create logger: %w", err)
 			}
-			line, err := statusline.Render(cmd.Context(), os.Stdin, logger)
+			executable, err := os.Executable()
+			if err != nil {
+				return fmt.Errorf("failed to locate own executable: %w", err)
+			}
+			// Фоновое обновление индекса читает ту же конфигурацию, что и строка статуса
+			command := []string{executable}
+			if configPath != "" {
+				command = append(command, "--config", configPath)
+			}
+			refresh := func(dir string) error { return statusline.StartIndexRefresh(command, dir) }
+
+			line, err := statusline.Render(cmd.Context(), os.Stdin, refresh, logger)
 			if err != nil {
 				return err
 			}
@@ -575,6 +553,47 @@ func newStatusLineCmd() *cobra.Command {
 			return nil
 		},
 	}
+}
+
+// newRefreshGitIndexCmd создает команду фонового обновления индекса git.
+// Строка статуса запускает её отдельным процессом, когда git status стал
+// медленным, и сама её не ждёт
+func newRefreshGitIndexCmd() *cobra.Command {
+	var dir string
+
+	cmd := &cobra.Command{
+		Use:    statusline.RefreshCommand,
+		Short:  "Обновить индекс git для строки статуса",
+		Hidden: true,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			config, err := core.LoadConfig(configPath)
+			if err != nil {
+				return fmt.Errorf("failed to load config: %w", err)
+			}
+			logger, err := core.NewLogger(config.Logger)
+			if err != nil {
+				return fmt.Errorf("failed to create logger: %w", err)
+			}
+
+			if dir == "" {
+				return fmt.Errorf("не задан --dir")
+			}
+
+			start := time.Now()
+			refreshed, err := statusline.RefreshIndex(cmd.Context(), dir)
+			if err != nil {
+				logger.Warn("git index refresh failed", "dir", dir, "error", err)
+				return err
+			}
+			if refreshed {
+				logger.Info("git index refreshed", "dir", dir, "ms", time.Since(start).Milliseconds())
+			}
+			return nil
+		},
+	}
+
+	cmd.Flags().StringVar(&dir, "dir", "", "каталог репозитория")
+	return cmd
 }
 
 // newVersionCmd создает команду вывода версии

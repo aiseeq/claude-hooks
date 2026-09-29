@@ -2,6 +2,7 @@ package desktop
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"time"
 
@@ -62,19 +63,20 @@ func Send(conn *dbus.Conn, notification Notification) (uint32, error) {
 // WaitForAction ждёт клика по уведомлению с идентификатором id.
 // Возвращает true, если пользователь нажал на уведомление, и false,
 // если оно было закрыто, истекло или истёк срок ожидания
-func WaitForAction(ctx context.Context, conn *dbus.Conn, id uint32) (bool, error) {
+func WaitForAction(ctx context.Context, conn *dbus.Conn, id uint32) (clicked bool, err error) {
 	if err := conn.AddMatchSignal(
 		dbus.WithMatchObjectPath(notifyPath),
 		dbus.WithMatchInterface(notifyIface),
 	); err != nil {
 		return false, fmt.Errorf("failed to subscribe to notification signals: %w", err)
 	}
-	// Подписка умирает вместе с соединением хука — сбой отписки ничего не меняет
 	defer func() {
-		_ = conn.RemoveMatchSignal(
+		if removeErr := conn.RemoveMatchSignal(
 			dbus.WithMatchObjectPath(notifyPath),
 			dbus.WithMatchInterface(notifyIface),
-		)
+		); removeErr != nil {
+			err = errors.Join(err, fmt.Errorf("failed to unsubscribe from notification signals: %w", removeErr))
+		}
 	}()
 
 	signals := make(chan *dbus.Signal, 16)

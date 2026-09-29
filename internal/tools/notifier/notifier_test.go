@@ -1,7 +1,6 @@
 package notifier
 
 import (
-	"context"
 	"os"
 	"path/filepath"
 	"strings"
@@ -10,91 +9,13 @@ import (
 	"github.com/aiseeq/claude-hooks/internal/core"
 )
 
-func newNotifier(t *testing.T, config core.ToolConfig) *Tool {
+func newNotifier(t *testing.T, config core.ToolConfig) *Notifier {
 	t.Helper()
-
-	tool, err := New(config, testLogger(t))
-	if err != nil {
-		t.Fatalf("failed to create tool: %v", err)
-	}
-	return tool
+	return New(config, testLogger(t))
 }
 
-func TestNotifierTool_IgnoresToolOperations(t *testing.T) {
-	tool := newNotifier(t, core.ToolConfig{Enabled: true})
-
-	for _, toolName := range []string{"Write", "Edit", "Bash"} {
-		t.Run(toolName, func(t *testing.T) {
-			result, err := tool.ValidateTool(context.Background(), &core.ToolInput{ToolName: toolName})
-			if err != nil {
-				t.Fatalf("validation failed: %v", err)
-			}
-			if !result.IsValid || len(result.Suggestions) > 0 {
-				t.Error("notifier обрабатывает только события сессии")
-			}
-		})
-	}
-}
-
-func TestNotifierTool_HandlesSessionEvents(t *testing.T) {
-	tool := newNotifier(t, core.ToolConfig{Enabled: true, Sound: false, Desktop: false})
-
-	for _, event := range []string{core.EventStop, core.EventNotification} {
-		t.Run(event, func(t *testing.T) {
-			result, err := tool.ValidateTool(context.Background(), &core.ToolInput{
-				ToolName: event,
-				CWD:      "/home/user/work/my-project",
-				Message:  "Claude needs your permission to use Bash",
-			})
-			if err != nil {
-				t.Fatalf("validation failed: %v", err)
-			}
-			if len(result.Suggestions) == 0 {
-				t.Fatalf("событие %s должно приводить к уведомлению", event)
-			}
-			if !strings.Contains(result.Suggestions[0], "my-project") {
-				t.Errorf("имя проекта не определено: %q", result.Suggestions[0])
-			}
-		})
-	}
-}
-
-func TestNotifierTool_SkipsRepeatedReminders(t *testing.T) {
-	tool := newNotifier(t, core.ToolConfig{Enabled: true, Sound: false, Desktop: false})
-
-	tests := []struct {
-		name     string
-		previous core.SessionState
-		event    string
-		notified bool
-	}{
-		// Пока Claude ждёт, Claude Code напоминает о себе тем же событием
-		{name: "первый вопрос", previous: core.StateWorking, event: core.EventNotification, notified: true},
-		{name: "напоминание о вопросе", previous: core.StateWaiting, event: core.EventNotification, notified: false},
-		{name: "завершение работы", previous: core.StateWorking, event: core.EventStop, notified: true},
-		{name: "напоминание после завершения", previous: core.StateDone, event: core.EventNotification, notified: false},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			ctx := core.WithPreviousState(context.Background(), tt.previous)
-			result, err := tool.ValidateTool(ctx, &core.ToolInput{
-				ToolName: tt.event,
-				CWD:      "/home/user/work/my-project",
-			})
-			if err != nil {
-				t.Fatalf("validation failed: %v", err)
-			}
-
-			if notified := len(result.Suggestions) > 0; notified != tt.notified {
-				t.Errorf("уведомление отправлено = %v, ожидалось %v", notified, tt.notified)
-			}
-		})
-	}
-}
-
-func TestNotifierTool_BuildAlert(t *testing.T) {
-	tool := newNotifier(t, core.ToolConfig{
+func TestNotifier_BuildAlert(t *testing.T) {
+	notifier := newNotifier(t, core.ToolConfig{
 		Enabled:         true,
 		Sound:           true,
 		Desktop:         true,
@@ -102,13 +23,11 @@ func TestNotifierTool_BuildAlert(t *testing.T) {
 	})
 
 	t.Run("вопрос показывает текст запроса", func(t *testing.T) {
-		alert, title, ok := tool.buildAlert(&core.ToolInput{
-			ToolName: core.EventNotification,
-			Message:  "Claude needs your permission to use Bash",
+		alert, title, err := notifier.buildAlert(core.EventNotification, &core.ToolInput{
+			Message: "Claude needs your permission to use Bash",
 		}, "my-project")
-
-		if !ok {
-			t.Fatal("событие должно обрабатываться")
+		if err != nil {
+			t.Fatalf("событие должно обрабатываться: %v", err)
 		}
 		if alert.Message != "Claude needs your permission to use Bash" {
 			t.Errorf("текст запроса не подставлен: %q", alert.Message)
@@ -123,10 +42,9 @@ func TestNotifierTool_BuildAlert(t *testing.T) {
 	})
 
 	t.Run("завершение работы без текста запроса", func(t *testing.T) {
-		alert, title, ok := tool.buildAlert(&core.ToolInput{ToolName: core.EventStop}, "my-project")
-
-		if !ok {
-			t.Fatal("событие должно обрабатываться")
+		alert, title, err := notifier.buildAlert(core.EventStop, &core.ToolInput{}, "my-project")
+		if err != nil {
+			t.Fatalf("событие должно обрабатываться: %v", err)
 		}
 		if !strings.Contains(alert.Message, "my-project") {
 			t.Errorf("сообщение: %q", alert.Message)
@@ -136,51 +54,41 @@ func TestNotifierTool_BuildAlert(t *testing.T) {
 		}
 	})
 
-	t.Run("посторонние операции игнорируются", func(t *testing.T) {
-		if _, _, ok := tool.buildAlert(&core.ToolInput{ToolName: "Write"}, "my-project"); ok {
+	t.Run("посторонние события — ошибка", func(t *testing.T) {
+		if _, _, err := notifier.buildAlert("Write", &core.ToolInput{}, "my-project"); err == nil {
 			t.Error("Write не является событием сессии")
 		}
 	})
 }
 
-func TestNotifierTool_ActivationDisabled(t *testing.T) {
-	tool := newNotifier(t, core.ToolConfig{Enabled: true, Desktop: true, ActivateOnClick: false})
+func TestNotifier_ActivationDisabled(t *testing.T) {
+	notifier := newNotifier(t, core.ToolConfig{Enabled: true, Desktop: true, ActivateOnClick: false})
 
-	alert, _, ok := tool.buildAlert(&core.ToolInput{ToolName: core.EventStop}, "my-project")
-	if !ok {
-		t.Fatal("событие должно обрабатываться")
+	alert, _, err := notifier.buildAlert(core.EventStop, &core.ToolInput{}, "my-project")
+	if err != nil {
+		t.Fatalf("событие должно обрабатываться: %v", err)
 	}
 	if len(alert.ActivatePIDs) != 0 {
 		t.Error("при выключенной активации список процессов должен быть пуст")
 	}
 }
 
-// Оба события заявлены как поддерживаемые: иначе движок не вызовет инструмент
-func TestNotifierTool_SupportedTools(t *testing.T) {
-	tool := newNotifier(t, core.ToolConfig{Enabled: true})
+// Без звука и уведомления Announce не запускает фоновый процесс и не падает
+func TestNotifier_AnnounceSilent(t *testing.T) {
+	t.Setenv("KONSOLE_DBUS_SERVICE", "")
+	notifier := newNotifier(t, core.ToolConfig{Enabled: true})
 
-	supported := strings.Join(tool.SupportedTools(), ",")
-	for _, event := range []string{core.EventStop, core.EventNotification} {
-		if !strings.Contains(supported, event) {
-			t.Errorf("событие %s не заявлено: %s", event, supported)
-		}
+	decision := Decision{State: core.StateDone, Alert: true}
+	if err := notifier.Announce(core.EventStop, &core.ToolInput{CWD: "/tmp/p"}, decision); err != nil {
+		t.Errorf("Announce: %v", err)
 	}
-}
-
-func TestNotifierTool_Disabled(t *testing.T) {
-	tool := newNotifier(t, core.ToolConfig{Enabled: false})
-
-	result, err := tool.ValidateTool(context.Background(), &core.ToolInput{ToolName: "Stop"})
-	if err != nil {
-		t.Fatalf("validation failed: %v", err)
-	}
-	if len(result.Suggestions) > 0 {
-		t.Error("выключенный инструмент не должен отправлять уведомления")
+	if err := notifier.Announce(core.EventStop, &core.ToolInput{}, Decision{State: core.StatePaused}); err != nil {
+		t.Errorf("пауза ничего не объявляет: %v", err)
 	}
 }
 
 func TestNotifierTool_ProjectName(t *testing.T) {
-	tool := newNotifier(t, core.ToolConfig{Enabled: true})
+	notifier := newNotifier(t, core.ToolConfig{Enabled: true})
 	home := t.TempDir()
 	t.Setenv("HOME", home)
 
@@ -247,7 +155,7 @@ func TestNotifierTool_ProjectName(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			if got := tool.ProjectName(&tt.input); got != tt.expected {
+			if got := notifier.ProjectName(&tt.input); got != tt.expected {
 				t.Errorf("ожидалось %q, получено %q", tt.expected, got)
 			}
 		})
@@ -288,20 +196,6 @@ func TestDecodeProjectDir_LeadingDashInName(t *testing.T) {
 	encoded := strings.ReplaceAll(root, "/", "-") + "--dashed-app"
 	if got := decodeProjectDir(encoded); got != nested {
 		t.Errorf("ожидалось %q, получено %q", nested, got)
-	}
-}
-
-// Напоминание об ожидании глушится при живых фоновых задачах, запрос
-// разрешения — никогда
-func TestIsIdleReminder(t *testing.T) {
-	if !IsIdleReminder("Claude is waiting for your input") {
-		t.Error("минутное напоминание не распознано")
-	}
-	if IsIdleReminder("Claude needs your permission to use Bash") {
-		t.Error("запрос разрешения не должен считаться напоминанием")
-	}
-	if IsIdleReminder("") {
-		t.Error("пустое сообщение не напоминание")
 	}
 }
 

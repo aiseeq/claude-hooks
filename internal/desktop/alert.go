@@ -129,20 +129,9 @@ func DeliverInBackground(executable, watchCommand string, alert Alert) error {
 		args = append(args, "--pids", joinInts(alert.ActivatePIDs), "--action-label", alert.ActionLabel)
 	}
 
-	cmd := exec.Command(executable, args...)
-	cmd.Stdin = nil
-	cmd.Stdout = nil
-	cmd.Stderr = nil
-	detachProcess(cmd)
-
-	if err := cmd.Start(); err != nil {
-		return fmt.Errorf("failed to start notification watcher: %w", err)
+	if err := StartDetached(exec.Command(executable, args...)); err != nil {
+		return fmt.Errorf("notification watcher: %w", err)
 	}
-
-	// Процесс переживёт хук: ждать его завершения нельзя, но и зомби оставлять
-	// не нужно; его код возврата никому не нужен
-	go func() { _ = cmd.Wait() }()
-
 	return nil
 }
 

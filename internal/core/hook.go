@@ -24,60 +24,46 @@ const (
 	LevelInfo     Level = "info"
 )
 
-// HookPhase определяет этап, на котором вызван инструмент
-type HookPhase string
-
+// Имена событий сессии, на которые отзывается notifier
 const (
-	PhasePre          HookPhase = "pre"
-	PhasePost         HookPhase = "post"
-	PhaseStop         HookPhase = "stop"
-	PhaseNotification HookPhase = "notification"
+	EventStop         = "Stop"
+	EventNotification = "Notification"
 )
-
-// Имена событий, под которыми инструменты объявляют поддержку сессионных хуков
-const (
-	EventStop             = "Stop"
-	EventNotification     = "Notification"
-	EventUserPromptSubmit = "UserPromptSubmit"
-)
-
-// phaseContextKey приватный тип ключа контекста — исключает коллизии между пакетами
-type phaseContextKey struct{}
-
-// WithPhase помещает этап выполнения хука в контекст
-func WithPhase(ctx context.Context, phase HookPhase) context.Context {
-	return context.WithValue(ctx, phaseContextKey{}, phase)
-}
-
-// PhaseFromContext извлекает этап выполнения хука из контекста
-func PhaseFromContext(ctx context.Context) HookPhase {
-	phase, _ := ctx.Value(phaseContextKey{}).(HookPhase)
-	return phase
-}
 
 // ToolInput представляет входные данные от Claude Code
 type ToolInput struct {
 	SessionID      string          `json:"session_id"`
 	ToolName       string          `json:"tool_name"`
 	ToolInput      json.RawMessage `json:"tool_input"`
-	FilePath       string          `json:"file_path,omitempty"`
-	Content        string          `json:"content,omitempty"`
-	NewString      string          `json:"new_string,omitempty"`
 	Command        string          `json:"command,omitempty"`
 	CWD            string          `json:"cwd,omitempty"`
 	TranscriptPath string          `json:"transcript_path,omitempty"`
-	// Message заполняется Claude Code для события Notification:
-	// текст запроса разрешения или ожидания ответа
-	Message string `json:"message,omitempty"`
+
+	// Message и NotificationType заполняются для события Notification:
+	// текст и тип (permission_prompt, idle_prompt и т.д.)
+	Message          string `json:"message,omitempty"`
+	NotificationType string `json:"notification_type,omitempty"`
+
+	// BackgroundTasks и SessionCrons приходят в Stop: незавершённые фоновые
+	// задачи и будильники сессии. nil означает, что поля не было вовсе
+	// (реестр задач недоступен), пустой список — что ждать нечего
+	BackgroundTasks *[]BackgroundTask `json:"background_tasks,omitempty"`
+	SessionCrons    *[]SessionCron    `json:"session_crons,omitempty"`
 }
 
-// FileAnalysis содержит анализируемую информацию о файле
-type FileAnalysis struct {
-	Path       string
-	Content    string
-	Extension  string
-	IsTestFile bool
-	IsDocsFile bool
+// BackgroundTask незавершённая фоновая задача сессии: субагент, фоновая
+// команда, Monitor, workflow. Описание и команда не читаются: для решения
+// хватает идентификатора и типа, а текст задачи в лог попадать не должен
+type BackgroundTask struct {
+	ID     string `json:"id"`
+	Type   string `json:"type"`
+	Status string `json:"status"`
+}
+
+// SessionCron взведённый будильник сессии: CronCreate, ScheduleWakeup, /loop
+type SessionCron struct {
+	ID        string `json:"id"`
+	Recurring bool   `json:"recurring"`
 }
 
 // Violation представляет найденное нарушение
@@ -91,7 +77,7 @@ type Violation struct {
 }
 
 // NewViolation создает нарушение. Единственная точка сборки: новое поле
-// добавляется здесь, а не в каждом валидаторе по отдельности
+// добавляется здесь, а не в каждой проверке по отдельности
 func NewViolation(violationType, message, suggestion string, severity Level, line, column int) Violation {
 	return Violation{
 		Type:       violationType,
@@ -114,23 +100,15 @@ type HookResponse struct {
 	ProcessTime float64     `json:"process_time_ms"`
 }
 
-// Validator интерфейс для проверок содержимого файлов
-type Validator interface {
-	Name() string
-	Validate(ctx context.Context, file *FileAnalysis) (*ValidationResult, error)
-	IsEnabled() bool
-}
-
-// ValidationResult результат валидации
+// ValidationResult результат проверки
 type ValidationResult struct {
 	IsValid     bool        `json:"is_valid"`
 	Violations  []Violation `json:"violations"`
 	Suggestions []string    `json:"suggestions"`
 }
 
-// NewValidationResult собирает результат валидации. Годность задаётся явно:
-// нарушения-предупреждения (например, ошибка форматирования уже записанного
-// файла) операцию не блокируют
+// NewValidationResult собирает результат проверки. Годность задаётся явно:
+// нарушения-предупреждения операцию не блокируют
 func NewValidationResult(isValid bool, violations []Violation, suggestions []string) *ValidationResult {
 	return &ValidationResult{
 		IsValid:     isValid,
@@ -139,7 +117,7 @@ func NewValidationResult(isValid bool, violations []Violation, suggestions []str
 	}
 }
 
-// ToolValidator интерфейс для обработки конкретных инструментов Claude Code
+// ToolValidator интерфейс проверки вызова инструмента Claude Code перед выполнением
 type ToolValidator interface {
 	Name() string
 	ValidateTool(ctx context.Context, input *ToolInput) (*ValidationResult, error)

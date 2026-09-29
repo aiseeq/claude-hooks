@@ -1,6 +1,7 @@
 package desktop
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"strconv"
@@ -22,7 +23,7 @@ const (
 // Рабочий путь для KDE — выполнить код внутри самого компоновщика: KWin принимает
 // JavaScript через D-Bus, а изнутри KWin присваивание workspace.activeWindow
 // ограничениями не связано
-func ActivateWindowByPIDs(conn *dbus.Conn, pids []int) error {
+func ActivateWindowByPIDs(conn *dbus.Conn, pids []int) (err error) {
 	if len(pids) == 0 {
 		return fmt.Errorf("no pids to match")
 	}
@@ -31,8 +32,12 @@ func ActivateWindowByPIDs(conn *dbus.Conn, pids []int) error {
 	if err != nil {
 		return err
 	}
-	// Временный файл во /tmp: неудалённый остаток безвреден
-	defer func() { _ = os.Remove(scriptPath) }()
+	// Файл нужен KWin только на время загрузки скрипта
+	defer func() {
+		if removeErr := os.Remove(scriptPath); removeErr != nil {
+			err = errors.Join(err, fmt.Errorf("failed to remove KWin script: %w", removeErr))
+		}
+	}()
 
 	// Имя плагина уникально для процесса: параллельные хуки не мешают друг другу
 	pluginName := "claude-hooks-activate-" + strconv.Itoa(os.Getpid())
@@ -64,8 +69,11 @@ func writeActivationScript(pids []int) (string, error) {
 		err = closeErr
 	}
 	if err != nil {
-		_ = os.Remove(file.Name())
-		return "", fmt.Errorf("failed to write script: %w", err)
+		err = fmt.Errorf("failed to write script: %w", err)
+		if removeErr := os.Remove(file.Name()); removeErr != nil {
+			err = errors.Join(err, fmt.Errorf("failed to remove script: %w", removeErr))
+		}
+		return "", err
 	}
 
 	return file.Name(), nil

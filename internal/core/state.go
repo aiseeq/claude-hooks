@@ -1,7 +1,6 @@
 package core
 
 import (
-	"context"
 	"errors"
 	"fmt"
 	"os"
@@ -19,31 +18,14 @@ const (
 	StateWorking SessionState = "working"
 	StateWaiting SessionState = "waiting"
 	StateDone    SessionState = "done"
+	// StatePaused — Claude остановился, но ждёт фоновые задачи или будильник
+	// и вернётся к работе сам. Для человека это всё ещё работа
+	StatePaused SessionState = "paused"
 )
 
 // stateTTL определяет, как долго запись считается актуальной.
 // Сессии завершаются без уведомления, поэтому старые файлы просто устаревают
 const stateTTL = 24 * time.Hour
-
-// previousStateKey приватный тип ключа контекста — исключает коллизии между пакетами
-type previousStateKey struct{}
-
-// WithPreviousState помещает в контекст состояние сессии до текущего события.
-// По нему видно переход, а не только новое состояние: повторные напоминания
-// Claude Code приходят тем же событием, что и первое
-func WithPreviousState(ctx context.Context, state SessionState) context.Context {
-	return context.WithValue(ctx, previousStateKey{}, state)
-}
-
-// PreviousStateFromContext извлекает предыдущее состояние сессии.
-// Если его не клали, считается, что работа шла
-func PreviousStateFromContext(ctx context.Context) SessionState {
-	state, ok := ctx.Value(previousStateKey{}).(SessionState)
-	if !ok {
-		return StateWorking
-	}
-	return state
-}
 
 // SaveSessionState запоминает состояние сессии и попутно вычищает записи
 // давно завершившихся сессий. Пустой идентификатор — событие без сессии,
@@ -92,6 +74,8 @@ func LoadSessionState(sessionID string) (SessionState, error) {
 		return StateWaiting, nil
 	case StateDone:
 		return StateDone, nil
+	case StatePaused:
+		return StatePaused, nil
 	default:
 		return StateWorking, nil
 	}
@@ -108,15 +92,20 @@ func sessionStatePath(sessionID string) (string, error) {
 	return filepath.Join(stateDir(), safeID), nil
 }
 
-// stateDir возвращает каталог для состояний сессий.
-// Каталог времени выполнения очищается при перезагрузке — это как раз то,
-// что нужно недолговечным записям
+// stateDir возвращает каталог для состояний сессий
 func stateDir() string {
+	return filepath.Join(RuntimeDir(), "sessions")
+}
+
+// RuntimeDir возвращает каталог для недолговечных файлов claude-hooks.
+// Каталог времени выполнения очищается при перезагрузке — это как раз то,
+// что нужно состояниям сессий и блокировкам
+func RuntimeDir() string {
 	base := os.Getenv("XDG_RUNTIME_DIR")
 	if base == "" {
 		base = os.TempDir()
 	}
-	return filepath.Join(base, "claude-hooks", "sessions")
+	return filepath.Join(base, "claude-hooks")
 }
 
 // cleanupStaleStates удаляет записи завершившихся сессий. Записи, которые

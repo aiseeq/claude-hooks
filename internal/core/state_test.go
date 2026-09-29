@@ -14,7 +14,7 @@ func TestSessionStateRoundTrip(t *testing.T) {
 		t.Errorf("неизвестная сессия должна считаться работающей, получено %q", got)
 	}
 
-	for _, state := range []SessionState{StateWaiting, StateDone, StateWorking} {
+	for _, state := range []SessionState{StateWaiting, StateDone, StatePaused, StateWorking} {
 		saveState(t, "session-1", state)
 		if got := loadState(t, "session-1"); got != state {
 			t.Errorf("ожидалось %q, получено %q", state, got)

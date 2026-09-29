@@ -14,36 +14,13 @@ import (
 
 // Config основная конфигурация хуков
 type Config struct {
-	Validators map[string]ValidatorConfig `yaml:"validators"`
-	Tools      map[string]ToolConfig      `yaml:"tools"`
-	Logger     LoggerConfig               `yaml:"logger"`
-}
-
-// ValidatorConfig конфигурация валидатора.
-// Exceptions поддерживает glob-паттерны ("*_test.go") и подстроки пути ("/cmd/")
-type ValidatorConfig struct {
-	Enabled    bool     `yaml:"enabled"`
-	Exceptions []string `yaml:"exceptions"`
-
-	// Специфичные для runtime_exit
-	GoFilesOnly bool `yaml:"go_files_only"`
-
-	// Специфичные для secrets
-	JWTPattern    string `yaml:"jwt_pattern"`
-	WalletPattern string `yaml:"wallet_pattern"`
-	APIKeyPattern string `yaml:"api_key_pattern"`
+	Tools  map[string]ToolConfig `yaml:"tools"`
+	Logger LoggerConfig          `yaml:"logger"`
 }
 
 // ToolConfig конфигурация инструмента
 type ToolConfig struct {
 	Enabled bool `yaml:"enabled"`
-
-	// Специфичные для bash
-	BlockedPatterns []string `yaml:"blocked_patterns"`
-
-	// Специфичные для formatter
-	GoFormat bool `yaml:"go_format"`
-	TSFormat bool `yaml:"ts_format"`
 
 	// Специфичные для notifier
 	Sound   bool `yaml:"sound"`
@@ -114,25 +91,9 @@ func SaveConfig(config *Config, configPath string) error {
 // DefaultConfig возвращает конфигурацию по умолчанию
 func DefaultConfig() *Config {
 	return &Config{
-		Validators: map[string]ValidatorConfig{
-			"runtime_exit": {
-				Enabled:     true,
-				GoFilesOnly: true,
-				Exceptions:  []string{"*_test.go", "/cmd/", "main.go"},
-			},
-			"secrets": {
-				Enabled:    true,
-				Exceptions: []string{"*_test.go", "test-config.*"},
-			},
-		},
 		Tools: map[string]ToolConfig{
-			"bash": {
+			"jira_style": {
 				Enabled: true,
-			},
-			"formatter": {
-				Enabled:  true,
-				GoFormat: true,
-				TSFormat: true,
 			},
 			"notifier": {
 				Enabled:         true,

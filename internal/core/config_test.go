@@ -17,18 +17,13 @@ func writeConfig(t *testing.T, content string) string {
 	return path
 }
 
-func TestLoadConfig_ParsesValidators(t *testing.T) {
+func TestLoadConfig_ParsesTools(t *testing.T) {
 	path := writeConfig(t, `
-validators:
-  secrets:
-    enabled: true
-    exceptions:
-      - "*_test.go"
 tools:
-  bash:
+  notifier:
     enabled: true
-    blocked_patterns:
-      - "rm -rf /"
+    sound: false
+    desktop: true
 logger:
   level: "debug"
   output: "stderr"
@@ -39,15 +34,12 @@ logger:
 		t.Fatalf("не удалось загрузить конфигурацию: %v", err)
 	}
 
-	secrets, exists := config.Validators["secrets"]
+	notifier, exists := config.Tools["notifier"]
 	if !exists {
-		t.Fatal("валидатор secrets отсутствует")
+		t.Fatal("инструмент notifier отсутствует")
 	}
-	if !secrets.Enabled {
-		t.Error("валидатор secrets должен быть включён")
-	}
-	if len(secrets.Exceptions) != 1 || secrets.Exceptions[0] != "*_test.go" {
-		t.Errorf("исключения не загружены: %+v", secrets.Exceptions)
+	if !notifier.Enabled || notifier.Sound || !notifier.Desktop {
+		t.Errorf("настройки notifier загружены неверно: %+v", notifier)
 	}
 	if config.Logger.Level != "debug" {
 		t.Errorf("ожидался уровень debug, получен %s", config.Logger.Level)
@@ -57,18 +49,17 @@ logger:
 // Опечатка в имени поля раньше молча отключала проверку
 func TestLoadConfig_RejectsUnknownFields(t *testing.T) {
 	path := writeConfig(t, `
-validators:
-  secrets:
+tools:
+  notifier:
     enabled: true
-    exception_paths:
-      - "*_test.go"
+    sounds: false
 `)
 
 	_, err := LoadConfig(path)
 	if err == nil {
 		t.Fatal("неизвестное поле должно приводить к ошибке")
 	}
-	if !strings.Contains(err.Error(), "exception_paths") {
+	if !strings.Contains(err.Error(), "sounds") {
 		t.Errorf("ошибка должна называть проблемное поле, получено: %v", err)
 	}
 }
@@ -78,8 +69,8 @@ func TestLoadConfig_MissingFileUsesDefaults(t *testing.T) {
 	if err != nil {
 		t.Fatalf("отсутствие файла не должно быть ошибкой: %v", err)
 	}
-	if !config.Validators["secrets"].Enabled {
-		t.Error("конфигурация по умолчанию должна включать валидатор secrets")
+	if !config.Tools["notifier"].Enabled || !config.Tools["jira_style"].Enabled {
+		t.Error("конфигурация по умолчанию должна включать notifier и jira_style")
 	}
 }
 
@@ -96,7 +87,7 @@ func TestLoadConfig_DoesNotCreateFile(t *testing.T) {
 }
 
 func TestLoadConfig_LoggerDefaults(t *testing.T) {
-	path := writeConfig(t, "validators:\n  secrets:\n    enabled: true\n")
+	path := writeConfig(t, "tools:\n  notifier:\n    enabled: true\n")
 
 	config, err := LoadConfig(path)
 	if err != nil {
@@ -138,7 +129,7 @@ func TestSaveAndLoadConfig(t *testing.T) {
 	if err != nil {
 		t.Fatalf("сохранённая конфигурация должна читаться: %v", err)
 	}
-	if len(config.Validators) != len(DefaultConfig().Validators) {
-		t.Error("состав валидаторов изменился при сохранении")
+	if len(config.Tools) != len(DefaultConfig().Tools) {
+		t.Error("состав инструментов изменился при сохранении")
 	}
 }

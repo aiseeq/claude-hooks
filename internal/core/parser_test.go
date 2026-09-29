@@ -4,35 +4,11 @@ import "testing"
 
 func TestParseToolInput(t *testing.T) {
 	tests := []struct {
-		name          string
-		payload       string
-		wantTool      string
-		wantFilePath  string
-		wantContent   string
-		wantNewString string
-		wantCommand   string
+		name        string
+		payload     string
+		wantTool    string
+		wantCommand string
 	}{
-		{
-			name:         "Write",
-			payload:      `{"tool_name":"Write","tool_input":{"file_path":"/tmp/a.go","content":"package a"}}`,
-			wantTool:     "Write",
-			wantFilePath: "/tmp/a.go",
-			wantContent:  "package a",
-		},
-		{
-			name:          "Edit",
-			payload:       `{"tool_name":"Edit","tool_input":{"file_path":"/tmp/a.go","new_string":"x := 1"}}`,
-			wantTool:      "Edit",
-			wantFilePath:  "/tmp/a.go",
-			wantNewString: "x := 1",
-		},
-		{
-			name:          "MultiEdit объединяет правки",
-			payload:       `{"tool_name":"MultiEdit","tool_input":{"file_path":"/tmp/a.go","edits":[{"new_string":"first"},{"new_string":"second"}]}}`,
-			wantTool:      "MultiEdit",
-			wantFilePath:  "/tmp/a.go",
-			wantNewString: "first\nsecond",
-		},
 		{
 			name:        "Bash",
 			payload:     `{"tool_name":"Bash","tool_input":{"command":"ls -la"}}`,
@@ -40,11 +16,15 @@ func TestParseToolInput(t *testing.T) {
 			wantCommand: "ls -la",
 		},
 		{
-			name:         "tool_input в виде строки",
-			payload:      `{"tool_name":"Write","tool_input":"{\"file_path\":\"/tmp/a.go\",\"content\":\"body\"}"}`,
-			wantTool:     "Write",
-			wantFilePath: "/tmp/a.go",
-			wantContent:  "body",
+			name:        "tool_input в виде строки",
+			payload:     `{"tool_name":"Bash","tool_input":"{\"command\":\"pwd\"}"}`,
+			wantTool:    "Bash",
+			wantCommand: "pwd",
+		},
+		{
+			name:     "другие инструменты не разбираются",
+			payload:  `{"tool_name":"Write","tool_input":{"file_path":"/tmp/a.go","command":"x"}}`,
+			wantTool: "Write",
 		},
 		{
 			name:     "Stop без tool_input",
@@ -63,15 +43,6 @@ func TestParseToolInput(t *testing.T) {
 			if input.ToolName != tt.wantTool {
 				t.Errorf("ToolName = %q, ожидалось %q", input.ToolName, tt.wantTool)
 			}
-			if input.FilePath != tt.wantFilePath {
-				t.Errorf("FilePath = %q, ожидалось %q", input.FilePath, tt.wantFilePath)
-			}
-			if input.Content != tt.wantContent {
-				t.Errorf("Content = %q, ожидалось %q", input.Content, tt.wantContent)
-			}
-			if input.NewString != tt.wantNewString {
-				t.Errorf("NewString = %q, ожидалось %q", input.NewString, tt.wantNewString)
-			}
 			if input.Command != tt.wantCommand {
 				t.Errorf("Command = %q, ожидалось %q", input.Command, tt.wantCommand)
 			}
@@ -80,7 +51,7 @@ func TestParseToolInput(t *testing.T) {
 }
 
 func TestParseToolInput_PreservesSessionFields(t *testing.T) {
-	input, err := ParseToolInput([]byte(`{"session_id":"s1","cwd":"/home/user/project","transcript_path":"/tmp/t.jsonl","tool_name":"Stop"}`))
+	input, err := ParseToolInput([]byte(`{"session_id":"s1","cwd":"/home/user/project","transcript_path":"/tmp/t.jsonl","notification_type":"idle_prompt"}`))
 	if err != nil {
 		t.Fatalf("разбор не удался: %v", err)
 	}
@@ -94,49 +65,55 @@ func TestParseToolInput_PreservesSessionFields(t *testing.T) {
 	if input.TranscriptPath != "/tmp/t.jsonl" {
 		t.Errorf("TranscriptPath = %q", input.TranscriptPath)
 	}
+	if input.NotificationType != "idle_prompt" {
+		t.Errorf("NotificationType = %q", input.NotificationType)
+	}
+}
+
+// Вход Stop снят с Claude Code 2.1.284: фоновая команда и будильник CronCreate
+func TestParseToolInput_StopBackgroundWork(t *testing.T) {
+	input, err := ParseToolInput([]byte(`{
+		"session_id":"b302985e","hook_event_name":"Stop","stop_hook_active":false,
+		"background_tasks":[{"id":"bl8voolia","type":"shell","status":"running","description":"sleep 40","command":"sleep 40"}],
+		"session_crons":[{"id":"2282851f","schedule":"4 17 29 9 *","recurring":false,"prompt":"say ping"}]
+	}`))
+	if err != nil {
+		t.Fatalf("разбор не удался: %v", err)
+	}
+
+	if input.BackgroundTasks == nil || len(*input.BackgroundTasks) != 1 {
+		t.Fatalf("background_tasks = %+v", input.BackgroundTasks)
+	}
+	if task := (*input.BackgroundTasks)[0]; task.ID != "bl8voolia" || task.Type != "shell" || task.Status != "running" {
+		t.Errorf("задача разобрана неверно: %+v", task)
+	}
+	if input.SessionCrons == nil || len(*input.SessionCrons) != 1 || (*input.SessionCrons)[0].Recurring {
+		t.Errorf("session_crons = %+v", input.SessionCrons)
+	}
+}
+
+// Пустой список и отсутствующее поле значат разное: «ждать нечего» против
+// «реестр задач недоступен»
+func TestParseToolInput_StopRegistryPresence(t *testing.T) {
+	empty, err := ParseToolInput([]byte(`{"background_tasks":[],"session_crons":[]}`))
+	if err != nil {
+		t.Fatalf("разбор не удался: %v", err)
+	}
+	if empty.BackgroundTasks == nil || empty.SessionCrons == nil {
+		t.Error("пустые списки должны отличаться от отсутствующих полей")
+	}
+
+	missing, err := ParseToolInput([]byte(`{"session_id":"s1"}`))
+	if err != nil {
+		t.Fatalf("разбор не удался: %v", err)
+	}
+	if missing.BackgroundTasks != nil || missing.SessionCrons != nil {
+		t.Error("отсутствующие поля должны оставаться nil")
+	}
 }
 
 func TestParseToolInput_InvalidJSON(t *testing.T) {
 	if _, err := ParseToolInput([]byte("{not json")); err == nil {
 		t.Error("некорректный JSON должен приводить к ошибке")
-	}
-}
-
-func TestCreateFileAnalysis(t *testing.T) {
-	analysis := CreateFileAnalysis(&ToolInput{
-		ToolName: "Write",
-		FilePath: "/project/internal/service_test.go",
-		Content:  "package service",
-	})
-
-	if analysis == nil {
-		t.Fatal("анализ не должен быть пустым")
-	}
-	if analysis.Extension != ".go" {
-		t.Errorf("Extension = %q", analysis.Extension)
-	}
-	if !analysis.IsTestFile {
-		t.Error("файл должен определяться как тестовый")
-	}
-	if analysis.IsDocsFile {
-		t.Error("Go-файл не является документацией")
-	}
-}
-
-func TestCreateFileAnalysis_UsesNewStringWhenContentEmpty(t *testing.T) {
-	analysis := CreateFileAnalysis(&ToolInput{
-		ToolName:  "Edit",
-		FilePath:  "/project/main.go",
-		NewString: "x := 1",
-	})
-
-	if analysis.Content != "x := 1" {
-		t.Errorf("Content = %q, ожидалось \"x := 1\"", analysis.Content)
-	}
-}
-
-func TestCreateFileAnalysis_NoFilePath(t *testing.T) {
-	if analysis := CreateFileAnalysis(&ToolInput{ToolName: "Bash", Command: "ls"}); analysis != nil {
-		t.Error("без пути к файлу анализ не создается")
 	}
 }

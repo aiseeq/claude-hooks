@@ -68,8 +68,9 @@ type Input struct {
 
 // Render читает данные Claude Code и возвращает строку статуса.
 // Попутно обновляется заголовок окна: строка статуса видна только в активном
-// окне, а по заголовку сессию видно в панели задач и в переключателе окон
-func Render(ctx context.Context, stdin io.Reader, logger core.Logger) (string, error) {
+// окне, а по заголовку сессию видно в панели задач и в переключателе окон.
+// refreshIndex запускает фоновое обновление индекса, когда git status медленный
+func Render(ctx context.Context, stdin io.Reader, refreshIndex IndexRefresher, logger core.Logger) (string, error) {
 	data, err := io.ReadAll(stdin)
 	if err != nil {
 		return "", fmt.Errorf("failed to read status line input: %w", err)
@@ -80,7 +81,7 @@ func Render(ctx context.Context, stdin io.Reader, logger core.Logger) (string, e
 		return "", fmt.Errorf("failed to parse status line input: %w", err)
 	}
 
-	line, title := build(ctx, input, logger)
+	line, title := build(ctx, input, refreshIndex, logger)
 	if err := desktop.SetTerminalTitle(title); err != nil {
 		logger.Warn("terminal title not set", "error", err)
 	}
@@ -91,7 +92,7 @@ func Render(ctx context.Context, stdin io.Reader, logger core.Logger) (string, e
 // build собирает строку статуса и заголовок окна. Сбои источников (состояние
 // сессии, git) строку не срывают: она рисуется по тому, что удалось прочитать,
 // а сбой уходит в лог
-func build(ctx context.Context, input Input, logger core.Logger) (string, string) {
+func build(ctx context.Context, input Input, refreshIndex IndexRefresher, logger core.Logger) (string, string) {
 	dir := workingDir(input)
 	state, err := core.LoadSessionState(input.SessionID)
 	if err != nil {
@@ -100,6 +101,11 @@ func build(ctx context.Context, input Input, logger core.Logger) (string, string
 	git, err := ReadGitStatus(ctx, dir)
 	if err != nil {
 		logger.Warn("git status incomplete", "dir", dir, "error", err)
+	}
+	if git.Slow {
+		if err := refreshIndex(dir); err != nil {
+			logger.Warn("git index refresh not started", "dir", dir, "error", err)
+		}
 	}
 
 	// Путь не показывается: плашка уже называет проект, а полный путь
@@ -190,15 +196,26 @@ func shortModel(model string) string {
 
 // gitSummary описывает ветку, незакоммиченные изменения и расхождение с remote
 func gitSummary(git GitStatus) string {
-	branchColor := green
-	if !git.RepoClean {
-		branchColor = yellow
+	if git.Detached {
+		summary := yellow + "⚠ " + git.Branch + reset
+		return summary + gitCounts(git)
 	}
 
-	summary := branchColor + git.Branch + reset
-	if git.Detached {
-		summary = yellow + "⚠ " + git.Branch + reset
+	switch {
+	case !git.Counted:
+		// git не успел посчитать изменения: ни «чисто», ни «есть правки»
+		// сказать нельзя, многоточие честнее зелёного
+		return git.Branch + dim + " …" + reset
+	case git.Changed == 0:
+		return green + git.Branch + reset + gitCounts(git)
+	default:
+		return yellow + git.Branch + reset + gitCounts(git)
 	}
+}
+
+// gitCounts описывает изменения и расхождение с remote
+func gitCounts(git GitStatus) string {
+	var summary string
 
 	if git.Changed > 0 {
 		summary += fmt.Sprintf("%s ●%d%s", yellow, git.Changed, reset)
