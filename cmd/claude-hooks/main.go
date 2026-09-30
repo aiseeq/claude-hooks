@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"sort"
 	"strings"
 	"time"
 
@@ -389,8 +390,13 @@ func showConfig() error {
 	}
 
 	fmt.Println("Инструменты:")
-	for name, toolConfig := range config.Tools {
-		fmt.Printf("  %-20s %s\n", name, enabledLabel(toolConfig.Enabled))
+	names := make([]string, 0, len(config.Tools))
+	for name := range config.Tools {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	for _, name := range names {
+		fmt.Printf("  %-20s %s\n", name, enabledLabel(config.Tools[name].Enabled))
 	}
 
 	return nil

@@ -153,11 +153,11 @@ func playSound() error {
 func (c soundCandidate) play() error {
 	if c.file != "" {
 		if _, err := os.Stat(c.file); err != nil {
-			return err
+			return fmt.Errorf("sound file unavailable: %w", err)
 		}
 	}
 	if _, err := exec.LookPath(c.command); err != nil {
-		return err
+		return fmt.Errorf("sound player not found: %w", err)
 	}
 
 	args := c.args

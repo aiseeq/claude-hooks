@@ -120,7 +120,7 @@ func readPayloadFile(path string) (string, error) {
 	}
 	info, err := os.Stat(path)
 	if err != nil {
-		return "", err
+		return "", fmt.Errorf("stat payload file: %w", err)
 	}
 	if info.IsDir() {
 		return "", fmt.Errorf("%s is a directory", path)
@@ -130,7 +130,7 @@ func readPayloadFile(path string) (string, error) {
 	}
 	data, err := os.ReadFile(path)
 	if err != nil {
-		return "", err
+		return "", fmt.Errorf("read payload file: %w", err)
 	}
 	return string(data), nil
 }
