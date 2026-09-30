@@ -126,3 +126,26 @@ func TestLoadSessionStateFallsBackOnGarbage(t *testing.T) {
 		t.Errorf("ожидалось %q, получено %q", StateWorking, got)
 	}
 }
+
+// Нечитаемая запись — ошибка без правдоподобного состояния: что делать без
+// него, решает вызывающий
+func TestLoadSessionStateUnreadableIsAnError(t *testing.T) {
+	t.Setenv("XDG_RUNTIME_DIR", t.TempDir())
+
+	path, err := sessionStatePath("unreadable")
+	if err != nil {
+		t.Fatalf("не удалось получить путь состояния: %v", err)
+	}
+	// Каталог на месте файла: чтение падает не с «файла нет»
+	if err := os.MkdirAll(path, 0o755); err != nil {
+		t.Fatalf("не удалось создать каталог: %v", err)
+	}
+
+	got, err := LoadSessionState("unreadable")
+	if err == nil {
+		t.Fatal("нечитаемая запись должна давать ошибку")
+	}
+	if got != "" {
+		t.Errorf("при ошибке состояние не выдумывается, получено %q", got)
+	}
+}

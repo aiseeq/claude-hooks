@@ -95,10 +95,15 @@ func build(ctx context.Context, input Input, logger core.Logger) (string, string
 	dir := workingDir(input)
 	state, err := core.LoadSessionState(input.SessionID)
 	if err != nil {
+		// Явный failover: без записи состояние помечается неизвестным, и
+		// плашка остаётся нейтральной — ни «ждёт ответа», ни «готово»
 		logger.Warn("session state unavailable", "session", input.SessionID, "error", err)
+		state = core.StateUnknown
 	}
 	git, err := ReadGitStatus(ctx, dir)
 	if err != nil {
+		// Best effort: GitStatus сам говорит, что получено — без IsRepo ветки
+		// нет, без Counted вместо счётчиков рисуется «…»
 		logger.Warn("git status incomplete", "dir", dir, "error", err)
 	}
 

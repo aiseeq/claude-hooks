@@ -21,8 +21,8 @@ const tasksFileSuffix = ".tasks"
 // ActiveBackgroundTasks отбирает задачи, которых Claude ещё ждёт: всё из
 // списка Claude Code, кроме висящих дольше abandonedTaskAge. Время первого
 // появления задачи хранится рядом с состоянием сессии, исчезнувшие из списка
-// задачи забываются. При сбое учёта возвращается весь список вместе с
-// ошибкой: Claude Code сам сказал, что задачи живы
+// задачи забываются. При сбое учёта возвращается только ошибка: брошенные
+// задачи не отличить от живых, и чем заменить отбор, решает вызывающий
 func ActiveBackgroundTasks(sessionID string, tasks []BackgroundTask, now time.Time) ([]BackgroundTask, error) {
 	if sessionID == "" {
 		return tasks, nil
@@ -30,20 +30,20 @@ func ActiveBackgroundTasks(sessionID string, tasks []BackgroundTask, now time.Ti
 
 	statePath, err := sessionStatePath(sessionID)
 	if err != nil {
-		return tasks, err
+		return nil, err
 	}
 	path := statePath + tasksFileSuffix
 
 	if len(tasks) == 0 {
 		if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
-			return tasks, fmt.Errorf("cannot forget background tasks: %w", err)
+			return nil, fmt.Errorf("cannot forget background tasks: %w", err)
 		}
 		return tasks, nil
 	}
 
 	seen, err := loadFirstSeen(path)
 	if err != nil {
-		return tasks, err
+		return nil, err
 	}
 
 	current := make(map[string]time.Time, len(tasks))
@@ -60,7 +60,7 @@ func ActiveBackgroundTasks(sessionID string, tasks []BackgroundTask, now time.Ti
 	}
 
 	if err := saveFirstSeen(path, current); err != nil {
-		return tasks, err
+		return nil, err
 	}
 	return active, nil
 }

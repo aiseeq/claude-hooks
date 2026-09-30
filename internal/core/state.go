@@ -21,6 +21,9 @@ const (
 	// StatePaused — Claude остановился, но ждёт фоновые задачи или будильник
 	// и вернётся к работе сам. Для человека это всё ещё работа
 	StatePaused SessionState = "paused"
+	// StateUnknown — запись состояния не прочиталась. Хранилищу не пишется:
+	// им вызывающий явно помечает, что предыдущее состояние не получено
+	StateUnknown SessionState = "unknown"
 )
 
 // stateTTL определяет, как долго запись считается актуальной.
@@ -49,8 +52,9 @@ func SaveSessionState(sessionID string, state SessionState) error {
 	return cleanupStaleStates(filepath.Dir(path))
 }
 
-// LoadSessionState читает состояние сессии. Для неизвестной сессии
-// возвращается StateWorking: раз хук ещё не отработал, работа идёт
+// LoadSessionState читает состояние сессии. Для сессии без записи
+// возвращается StateWorking: раз хук ещё не отработал, работа идёт.
+// Нечитаемая запись — ошибка без состояния: чем её заменить, решает вызывающий
 func LoadSessionState(sessionID string) (SessionState, error) {
 	if sessionID == "" {
 		return StateWorking, nil
@@ -58,7 +62,7 @@ func LoadSessionState(sessionID string) (SessionState, error) {
 
 	path, err := sessionStatePath(sessionID)
 	if err != nil {
-		return StateWorking, err
+		return "", err
 	}
 
 	data, err := os.ReadFile(path)
@@ -66,7 +70,7 @@ func LoadSessionState(sessionID string) (SessionState, error) {
 		if os.IsNotExist(err) {
 			return StateWorking, nil
 		}
-		return StateWorking, fmt.Errorf("cannot read session state: %w", err)
+		return "", fmt.Errorf("cannot read session state: %w", err)
 	}
 
 	switch SessionState(strings.TrimSpace(string(data))) {

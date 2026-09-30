@@ -110,6 +110,7 @@ func TestTerminalTitle(t *testing.T) {
 		{name: "работа", git: git, state: core.StateWorking, expected: "🔵 DEMO · main"},
 		{name: "ожидание ответа", git: git, state: core.StateWaiting, expected: "🟡 DEMO · main"},
 		{name: "работа завершена", git: git, state: core.StateDone, expected: "✅ DEMO · main"},
+		{name: "состояние не прочиталось: нейтральный значок", git: git, state: core.StateUnknown, expected: "🔵 DEMO · main"},
 		{name: "контекст на исходе", git: git, state: core.StateWorking, contextUsed: 90, expected: "🔴 DEMO · main"},
 		{name: "каталог вне репозитория", git: GitStatus{}, state: core.StateWorking, expected: "🔵 DEMO"},
 	}

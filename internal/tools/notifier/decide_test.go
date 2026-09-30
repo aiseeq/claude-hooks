@@ -61,6 +61,13 @@ func TestDecide_Stop(t *testing.T) {
 			want:     Decision{State: core.StateDone},
 		},
 		{
+			// Состояние не прочиталось: лишний звонок лучше пропущенного
+			name:     "предыдущее состояние неизвестно: звать",
+			input:    core.ToolInput{BackgroundTasks: tasks(), SessionCrons: crons()},
+			previous: core.StateUnknown,
+			want:     Decision{State: core.StateDone, Alert: true},
+		},
+		{
 			name:     "реестр задач не передан: звать",
 			input:    core.ToolInput{},
 			previous: core.StateWorking,
@@ -95,6 +102,8 @@ func TestDecide_Notification(t *testing.T) {
 		{name: "напоминание при фоновых задачах глушится", kind: "idle_prompt", previous: core.StatePaused, want: Decision{}},
 		{name: "напоминание после завершения", kind: "idle_prompt", previous: core.StateDone, want: Decision{State: core.StateWaiting}},
 		{name: "напоминание без Stop", kind: "idle_prompt", previous: core.StateWorking, want: Decision{State: core.StateWaiting, Alert: true}},
+		{name: "вопрос при неизвестном предыдущем состоянии", kind: "permission_prompt", previous: core.StateUnknown, want: Decision{State: core.StateWaiting, Alert: true}},
+		{name: "напоминание при неизвестном предыдущем состоянии", kind: "idle_prompt", previous: core.StateUnknown, want: Decision{State: core.StateWaiting, Alert: true}},
 		{name: "диалог MCP", kind: "elicitation_dialog", previous: core.StateWorking, want: Decision{State: core.StateWaiting, Alert: true}},
 		{name: "успешный вход не зовёт", kind: "auth_success", previous: core.StateWorking, want: Decision{}},
 		{name: "продолжение после лимита — работа", kind: "quota_auto_resume_fired", previous: core.StateDone, want: Decision{State: core.StateWorking}},

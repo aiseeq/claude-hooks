@@ -70,7 +70,7 @@ func TestActiveBackgroundTasks_ForgetsFinishedTasks(t *testing.T) {
 	}
 }
 
-func TestActiveBackgroundTasks_CorruptFileKeepsTasksAlive(t *testing.T) {
+func TestActiveBackgroundTasks_CorruptFileIsAnError(t *testing.T) {
 	runtimeDir := t.TempDir()
 	t.Setenv("XDG_RUNTIME_DIR", runtimeDir)
 
@@ -87,7 +87,7 @@ func TestActiveBackgroundTasks_CorruptFileKeepsTasksAlive(t *testing.T) {
 	if err == nil {
 		t.Error("испорченный файл учёта должен давать ошибку")
 	}
-	if len(active) != 1 {
-		t.Errorf("при сбое учёта задачи остаются живыми: %+v", active)
+	if active != nil {
+		t.Errorf("при сбое учёта список не выдумывается: %+v", active)
 	}
 }

@@ -193,14 +193,20 @@ func runSessionEvent(eventName string, data []byte, config *core.Config, logger 
 	// по нему виден переход, а не только новое состояние
 	previous, err := core.LoadSessionState(input.SessionID)
 	if err != nil {
+		// Явный failover: без записи переход не виден, и решение принимается
+		// по StateUnknown — оно зовёт человека, лишний звонок лучше пропущенного
 		logger.Warn("session state unavailable", "session", input.SessionID, "error", err)
+		previous = core.StateUnknown
 	}
 
 	event := notifier.Event{Name: eventName, Input: input, Previous: previous}
 	if eventName == core.EventStop && input.BackgroundTasks != nil {
 		active, err := core.ActiveBackgroundTasks(input.SessionID, *input.BackgroundTasks, time.Now())
 		if err != nil {
-			logger.Warn("background task bookkeeping failed", "session", input.SessionID, "error", err)
+			// Failover на список Claude Code: брошенные задачи не отличить от
+			// живых, а про все задачи списка Claude Code сам сказал, что они живы
+			logger.Warn("background task bookkeeping failed, every listed task counts as active", "session", input.SessionID, "error", err)
+			active = *input.BackgroundTasks
 		}
 		event.ActiveTasks = len(active)
 	}
@@ -233,8 +239,10 @@ func parseSessionInput(logger core.Logger, hookType string, data []byte) *core.T
 }
 
 // saveState запоминает состояние сессии для строки статуса и следующего
-// события. Сбой хранилища хук не срывает: строка статуса — не повод ломать хук
+// события. Сбой хранилища хук не срывает: код ошибки Claude Code показал бы
+// человеку на каждом событии, а уведомление важнее записи
 func saveState(logger core.Logger, sessionID string, state core.SessionState) {
+	//nolint:log-and-return-zero // события сессии нечего блокировать, а ошибка хука видна человеку в интерфейсе; без записи следующее событие решает по старому состоянию, сбой остаётся в логе
 	if err := core.SaveSessionState(sessionID, state); err != nil {
 		logger.Warn("session state not saved", "session", sessionID, "error", err)
 	}
@@ -448,10 +456,11 @@ func newNotifyCmd() *cobra.Command {
 					windowPID = os.Getpid()
 				}
 				// Окно принадлежит одному из процессов в цепочке до эмулятора
-				// терминала; оборванная цепочка всё равно годится — окно может
-				// быть у собранной части
+				// терминала
 				ancestors, err := desktop.ProcessAncestors(windowPID)
 				if err != nil {
+					// Best effort: собранная часть цепочки — настоящие PID, окно
+					// может быть у них; без окна клик просто ничего не активирует
 					fmt.Fprintf(os.Stderr, "claude-hooks: process ancestry incomplete: %v\n", err)
 				}
 				alert.ActivatePIDs = ancestors

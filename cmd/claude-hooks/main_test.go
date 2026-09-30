@@ -2,6 +2,7 @@ package main
 
 import (
 	"encoding/json"
+	"os"
 	"path/filepath"
 	"syscall"
 	"testing"
@@ -93,5 +94,25 @@ func TestRunSessionEvent_PauseThenDone(t *testing.T) {
 	runSessionEvent(core.EventStop, stopInput(t, "s2", "/nonexistent.jsonl", []map[string]any{}, []map[string]any{}), config, logger)
 	if state, err := core.LoadSessionState("s2"); err != nil || state != core.StateDone {
 		t.Errorf("после последней задачи ожидалось «готово»: %q, %v", state, err)
+	}
+}
+
+// Сбой учёта фоновых задач не превращает остановку в «готово»: Claude Code
+// сам сказал, что задача жива, и сессия остаётся на паузе
+func TestRunSessionEvent_BrokenTaskBookkeepingKeepsPause(t *testing.T) {
+	config, logger := silentConfig(t)
+
+	dir := filepath.Join(os.Getenv("XDG_RUNTIME_DIR"), "claude-hooks", "sessions")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "s3.tasks"), []byte("{broken"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	shell := []map[string]any{{"id": "b1", "type": "shell", "status": "running"}}
+	runSessionEvent(core.EventStop, stopInput(t, "s3", "/nonexistent.jsonl", shell, []map[string]any{}), config, logger)
+	if state, err := core.LoadSessionState("s3"); err != nil || state != core.StatePaused {
+		t.Errorf("при сбое учёта ожидалась пауза: %q, %v", state, err)
 	}
 }

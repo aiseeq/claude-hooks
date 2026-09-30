@@ -113,11 +113,19 @@ func decideNotification(event Event) Decision {
 
 // finish переводит сессию в состояние, где она ждёт человека. Звать нужно
 // только на переходе из работы: пока Claude ждёт, Claude Code напоминает о
-// себе тем же событием, а человека уже позвали один раз
+// себе тем же событием, а человека уже позвали один раз. Неизвестное
+// предыдущее состояние — тоже повод позвать: лишний звонок лучше пропущенного
 func finish(state core.SessionState, previous core.SessionState, note string) Decision {
 	decision := Decision{State: state, Reason: note}
-	if previous == core.StateWorking || previous == core.StatePaused {
+	switch previous {
+	case core.StateWorking, core.StatePaused:
 		decision.Alert = true
+		return decision
+	case core.StateUnknown:
+		decision.Alert = true
+		if note == "" {
+			decision.Reason = "предыдущее состояние не прочиталось, зову"
+		}
 		return decision
 	}
 	if note == "" {

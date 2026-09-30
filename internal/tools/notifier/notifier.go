@@ -92,10 +92,11 @@ func (n *Notifier) buildAlert(eventName string, input *core.ToolInput, projectNa
 	}
 
 	if n.activateOnClick {
-		// Окно принадлежит одному из предков: сам хук окна не имеет. Оборванная
-		// цепочка всё равно годится — окно может быть у собранной части
+		// Окно принадлежит одному из предков: сам хук окна не имеет
 		ancestors, err := desktop.ProcessAncestors(os.Getpid())
 		if err != nil {
+			// Best effort: собранная часть цепочки — настоящие PID, окно может
+			// быть у них; без окна клик просто ничего не активирует
 			n.logger.Warn("process ancestry incomplete", "error", err)
 		}
 		alert.ActivatePIDs = ancestors
