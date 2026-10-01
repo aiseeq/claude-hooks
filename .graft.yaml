@@ -7,7 +7,7 @@ gate:
 
 tools:
   glint:
-    go_install: github.com/aiseeq/glint@v1.21.0
+    go_install: github.com/aiseeq/glint@v1.29.0
     check: [glint, rules]
     expect: fail-open
 
