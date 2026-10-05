@@ -107,12 +107,12 @@ func TestTerminalTitle(t *testing.T) {
 		contextUsed float64
 		expected    string
 	}{
-		{name: "работа", git: git, state: core.StateWorking, expected: "🔵 DEMO · main"},
-		{name: "ожидание ответа", git: git, state: core.StateWaiting, expected: "🟡 DEMO · main"},
-		{name: "работа завершена", git: git, state: core.StateDone, expected: "✅ DEMO · main"},
-		{name: "состояние не прочиталось: нейтральный значок", git: git, state: core.StateUnknown, expected: "🔵 DEMO · main"},
-		{name: "контекст на исходе", git: git, state: core.StateWorking, contextUsed: 90, expected: "🔴 DEMO · main"},
-		{name: "каталог вне репозитория", git: GitStatus{}, state: core.StateWorking, expected: "🔵 DEMO"},
+		{name: "работа", git: git, state: core.StateWorking, expected: "🔵 demo · main"},
+		{name: "ожидание ответа", git: git, state: core.StateWaiting, expected: "🟡 demo · main"},
+		{name: "работа завершена", git: git, state: core.StateDone, expected: "✅ demo · main"},
+		{name: "состояние не прочиталось: нейтральный значок", git: git, state: core.StateUnknown, expected: "🔵 demo · main"},
+		{name: "контекст на исходе", git: git, state: core.StateWorking, contextUsed: 90, expected: "🔴 demo · main"},
+		{name: "каталог вне репозитория", git: GitStatus{}, state: core.StateWorking, expected: "🔵 demo"},
 	}
 
 	for _, tt := range tests {
@@ -187,23 +187,30 @@ func TestDetailsSkipsMissingData(t *testing.T) {
 	}
 }
 
-func TestWorkingDirPrefersSessionDir(t *testing.T) {
+func TestSessionDirIsLaunchDir(t *testing.T) {
 	input := Input{CWD: "/from/cwd"}
-	input.Workspace.CurrentDir = "/from/workspace"
+	input.Workspace.CurrentDir = "/from/current"
 	input.Workspace.ProjectDir = "/from/project"
 
-	if got := workingDir(input); got != "/from/workspace" {
-		t.Errorf("ожидалось /from/workspace, получено %q", got)
-	}
-
-	input.Workspace.CurrentDir = ""
-	if got := workingDir(input); got != "/from/cwd" {
-		t.Errorf("ожидалось /from/cwd, получено %q", got)
-	}
-
-	input.CWD = ""
-	if got := workingDir(input); got != "/from/project" {
+	// Агент ушёл в подпапку чужого проекта: имя и git остаются от каталога запуска
+	if got := sessionDir(input); got != "/from/project" {
 		t.Errorf("ожидалось /from/project, получено %q", got)
+	}
+	if got := gitDir(input); got != "/from/project" {
+		t.Errorf("git вне worktree: ожидалось /from/project, получено %q", got)
+	}
+
+	input.Workspace.GitWorktree = "feature"
+	if got := gitDir(input); got != "/from/current" {
+		t.Errorf("git в worktree: ожидалось /from/current, получено %q", got)
+	}
+	if got := sessionDir(input); got != "/from/project" {
+		t.Errorf("имя в worktree: ожидалось /from/project, получено %q", got)
+	}
+
+	input.Workspace.ProjectDir = ""
+	if got := sessionDir(input); got != "/from/cwd" {
+		t.Errorf("без project_dir: ожидалось /from/cwd, получено %q", got)
 	}
 }
 

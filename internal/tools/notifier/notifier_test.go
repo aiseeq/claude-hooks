@@ -106,7 +106,13 @@ func TestNotifierTool_ProjectName(t *testing.T) {
 		expected string
 	}{
 		{
-			name:     "рабочая директория сессии приоритетна",
+			// Агент сделал cd в подпапку чужого проекта: вкладка называет сессию по каталогу запуска
+			name:     "каталог запуска приоритетнее текущего",
+			input:    core.ToolInput{CWD: filepath.Join(home, "work/projecta/frontend"), TranscriptPath: "/p/" + encodedHome + "-work-claude-hooks/s.jsonl"},
+			expected: "claude-hooks",
+		},
+		{
+			name:     "без транскрипта берётся текущий каталог",
 			input:    core.ToolInput{CWD: filepath.Join(home, "git/life")},
 			expected: "life",
 		},

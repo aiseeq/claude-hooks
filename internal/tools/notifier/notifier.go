@@ -106,13 +106,13 @@ func (n *Notifier) buildAlert(eventName string, input *core.ToolInput, projectNa
 
 	switch eventName {
 	case core.EventStop:
-		terminalTitle = fmt.Sprintf("✅ %s · готово", strings.ToUpper(projectName))
+		terminalTitle = fmt.Sprintf("✅ %s · готово", projectName)
 		alert.Title = "Claude Code завершил работу"
 		alert.Message = "Проект: " + projectName
 		alert.Timeout = stopTimeout
 
 	case core.EventNotification:
-		terminalTitle = fmt.Sprintf("🟡 %s · ждёт ответа", strings.ToUpper(projectName))
+		terminalTitle = fmt.Sprintf("🟡 %s · ждёт ответа", projectName)
 		alert.Title = fmt.Sprintf("Claude Code ждёт ответа (%s)", projectName)
 		// Claude Code сообщает, чего именно ждёт: разрешения на инструмент или ввода
 		alert.Message = input.Message
@@ -128,18 +128,19 @@ func (n *Notifier) buildAlert(eventName string, input *core.ToolInput, projectNa
 	return alert, terminalTitle, nil
 }
 
-// ProjectName определяет имя проекта: рабочая директория сессии — самый надёжный
-// источник, путь транскрипта используется как запасной вариант
+// ProjectName определяет имя проекта по каталогу, где запущена сессия: его
+// кодирует каталог транскрипта. Текущий каталог (cwd) агент меняет по ходу
+// работы, поэтому он только запасной вариант
 func (n *Notifier) ProjectName(input *core.ToolInput) string {
-	if input.CWD != "" {
-		return core.ProjectNameForDir(input.CWD)
-	}
-
 	if transcriptPath := input.TranscriptPath; transcriptPath != "" {
 		encoded := filepath.Base(filepath.Dir(transcriptPath))
 		if dir := decodeProjectDir(encoded); dir != "" {
 			return core.ProjectNameForDir(dir)
 		}
+	}
+
+	if input.CWD != "" {
+		return core.ProjectNameForDir(input.CWD)
 	}
 
 	if wd, err := os.Getwd(); err == nil {

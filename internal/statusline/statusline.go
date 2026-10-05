@@ -92,7 +92,7 @@ func Render(ctx context.Context, stdin io.Reader, logger core.Logger) (string, e
 // сессии, git) строку не срывают: она рисуется по тому, что удалось прочитать,
 // а сбой уходит в лог
 func build(ctx context.Context, input Input, logger core.Logger) (string, string) {
-	dir := workingDir(input)
+	dir := sessionDir(input)
 	state, err := core.LoadSessionState(input.SessionID)
 	if err != nil {
 		// Явный failover: без записи состояние помечается неизвестным, и
@@ -100,11 +100,12 @@ func build(ctx context.Context, input Input, logger core.Logger) (string, string
 		logger.Warn("session state unavailable", "session", input.SessionID, "error", err)
 		state = core.StateUnknown
 	}
-	git, err := ReadGitStatus(ctx, dir)
+	repoDir := gitDir(input)
+	git, err := ReadGitStatus(ctx, repoDir)
 	if err != nil {
 		// Best effort: GitStatus сам говорит, что получено — без IsRepo ветки
 		// нет, без Counted вместо счётчиков рисуется «…»
-		logger.Warn("git status incomplete", "dir", dir, "error", err)
+		logger.Warn("git status incomplete", "dir", repoDir, "error", err)
 	}
 
 	// Путь не показывается: плашка уже называет проект, а полный путь
@@ -136,7 +137,7 @@ func terminalTitle(dir string, git GitStatus, state core.SessionState, contextUs
 		marker = "✅"
 	}
 
-	title := marker + " " + strings.ToUpper(core.ProjectNameForDir(dir))
+	title := marker + " " + core.ProjectNameForDir(dir)
 	if git.IsRepo {
 		title += " · " + git.Branch
 	}
@@ -248,9 +249,24 @@ func contextBar(used float64) string {
 	return fmt.Sprintf("%sctx %s%s %.0f%%%s", dim, color, bar, used, reset)
 }
 
-// workingDir выбирает каталог, который описывает сессию
-func workingDir(input Input) string {
-	for _, candidate := range []string{input.Workspace.CurrentDir, input.CWD, input.Workspace.ProjectDir} {
+// sessionDir — каталог, где запущена сессия: им называется проект в плашке и
+// заголовке. Текущий каталог агента уходит в подпапки и чужие проекты (cd по
+// ходу работы), и заголовок вкладки тогда называл бы не ту сессию
+func sessionDir(input Input) string {
+	return firstDir(input.Workspace.ProjectDir, input.CWD, input.Workspace.CurrentDir)
+}
+
+// gitDir — каталог, чей git показывается. В worktree это текущий каталог: ветка
+// worktree отличается от ветки основного клона. Иначе — каталог сессии
+func gitDir(input Input) string {
+	if input.Workspace.GitWorktree != "" {
+		return firstDir(input.Workspace.CurrentDir, input.CWD, input.Workspace.ProjectDir)
+	}
+	return sessionDir(input)
+}
+
+func firstDir(candidates ...string) string {
+	for _, candidate := range candidates {
 		if candidate != "" {
 			return candidate
 		}
