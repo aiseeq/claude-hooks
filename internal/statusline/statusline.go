@@ -121,12 +121,13 @@ func build(ctx context.Context, input Input, logger core.Logger) (string, string
 		output.WriteString(dim + " · " + reset + part)
 	}
 
-	return output.String(), terminalTitle(dir, git, state, input.ContextWindow.UsedPercentage)
+	return output.String(), terminalTitle(dir, state, input.ContextWindow.UsedPercentage)
 }
 
-// terminalTitle собирает заголовок окна: состояние, проект и ветка.
-// Значок состояния идёт первым — по нему окно находится взглядом в панели задач
-func terminalTitle(dir string, git GitStatus, state core.SessionState, contextUsed float64) string {
+// terminalTitle собирает заголовок окна: значок состояния и проект.
+// Значок идёт первым — по нему окно находится взглядом в панели задач; ветка
+// есть в строке статуса, во вкладке она вытесняет имя проекта
+func terminalTitle(dir string, state core.SessionState, contextUsed float64) string {
 	marker := "🔵"
 	switch {
 	case contextUsed >= contextCriticalPercent:
@@ -137,11 +138,7 @@ func terminalTitle(dir string, git GitStatus, state core.SessionState, contextUs
 		marker = "✅"
 	}
 
-	title := marker + " " + core.ProjectNameForDir(dir)
-	if git.IsRepo {
-		title += " · " + git.Branch
-	}
-	return title
+	return marker + " " + core.ProjectNameForDir(dir)
 }
 
 // projectBadge рисует имя проекта плашкой, цвет которой показывает состояние.

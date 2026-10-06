@@ -106,13 +106,13 @@ func (n *Notifier) buildAlert(eventName string, input *core.ToolInput, projectNa
 
 	switch eventName {
 	case core.EventStop:
-		terminalTitle = fmt.Sprintf("✅ %s · готово", projectName)
+		terminalTitle = "✅ " + projectName
 		alert.Title = "Claude Code завершил работу"
 		alert.Message = "Проект: " + projectName
 		alert.Timeout = stopTimeout
 
 	case core.EventNotification:
-		terminalTitle = fmt.Sprintf("🟡 %s · ждёт ответа", projectName)
+		terminalTitle = "🟡 " + projectName
 		alert.Title = fmt.Sprintf("Claude Code ждёт ответа (%s)", projectName)
 		// Claude Code сообщает, чего именно ждёт: разрешения на инструмент или ввода
 		alert.Message = input.Message

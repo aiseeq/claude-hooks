@@ -32,7 +32,7 @@ func TestNotifier_BuildAlert(t *testing.T) {
 		if alert.Message != "Claude needs your permission to use Bash" {
 			t.Errorf("текст запроса не подставлен: %q", alert.Message)
 		}
-		if !strings.Contains(title, "ждёт ответа") {
+		if title != "🟡 my-project" {
 			t.Errorf("заголовок окна: %q", title)
 		}
 		// Без списка процессов уведомление останется без действия по клику
@@ -49,7 +49,7 @@ func TestNotifier_BuildAlert(t *testing.T) {
 		if !strings.Contains(alert.Message, "my-project") {
 			t.Errorf("сообщение: %q", alert.Message)
 		}
-		if !strings.Contains(title, "готово") {
+		if title != "✅ my-project" {
 			t.Errorf("заголовок окна: %q", title)
 		}
 	})

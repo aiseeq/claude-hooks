@@ -98,26 +98,22 @@ func TestGitSummary(t *testing.T) {
 }
 
 func TestTerminalTitle(t *testing.T) {
-	git := GitStatus{IsRepo: true, Branch: "main"}
-
 	tests := []struct {
 		name        string
-		git         GitStatus
 		state       core.SessionState
 		contextUsed float64
 		expected    string
 	}{
-		{name: "работа", git: git, state: core.StateWorking, expected: "🔵 demo · main"},
-		{name: "ожидание ответа", git: git, state: core.StateWaiting, expected: "🟡 demo · main"},
-		{name: "работа завершена", git: git, state: core.StateDone, expected: "✅ demo · main"},
-		{name: "состояние не прочиталось: нейтральный значок", git: git, state: core.StateUnknown, expected: "🔵 demo · main"},
-		{name: "контекст на исходе", git: git, state: core.StateWorking, contextUsed: 90, expected: "🔴 demo · main"},
-		{name: "каталог вне репозитория", git: GitStatus{}, state: core.StateWorking, expected: "🔵 demo"},
+		{name: "работа", state: core.StateWorking, expected: "🔵 demo"},
+		{name: "ожидание ответа", state: core.StateWaiting, expected: "🟡 demo"},
+		{name: "работа завершена", state: core.StateDone, expected: "✅ demo"},
+		{name: "состояние не прочиталось: нейтральный значок", state: core.StateUnknown, expected: "🔵 demo"},
+		{name: "контекст на исходе", state: core.StateWorking, contextUsed: 90, expected: "🔴 demo"},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got := terminalTitle("/home/user/work/demo", tt.git, tt.state, tt.contextUsed)
+			got := terminalTitle("/home/user/work/demo", tt.state, tt.contextUsed)
 			if got != tt.expected {
 				t.Errorf("ожидалось %q, получено %q", tt.expected, got)
 			}
