@@ -49,6 +49,11 @@ type ToolInput struct {
 	// (реестр задач недоступен), пустой список — что ждать нечего
 	BackgroundTasks *[]BackgroundTask `json:"background_tasks,omitempty"`
 	SessionCrons    *[]SessionCron    `json:"session_crons,omitempty"`
+
+	// StopHookActive и LastAssistantMessage приходят в Stop: ход уже
+	// продолжен stop-хуком, и текст последнего ответа модели целиком
+	StopHookActive       bool   `json:"stop_hook_active,omitempty"`
+	LastAssistantMessage string `json:"last_assistant_message,omitempty"`
 }
 
 // BackgroundTask незавершённая фоновая задача сессии: субагент, фоновая
@@ -123,4 +128,18 @@ type ToolValidator interface {
 	ValidateTool(ctx context.Context, input *ToolInput) (*ValidationResult, error)
 	IsEnabled() bool
 	SupportedTools() []string
+}
+
+// HighestLevel возвращает максимальный уровень серьезности среди нарушений
+func HighestLevel(violations []Violation) Level {
+	level := LevelInfo
+	for _, violation := range violations {
+		if violation.Severity == LevelCritical {
+			return LevelCritical
+		}
+		if violation.Severity == LevelWarning {
+			level = LevelWarning
+		}
+	}
+	return level
 }

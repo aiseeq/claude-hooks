@@ -1,6 +1,7 @@
 package core
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 )
@@ -36,21 +37,35 @@ func extractToolSpecificData(input *ToolInput) error {
 	return nil
 }
 
-// decodeToolInput разбирает tool_input: объект либо JSON-строка с объектом внутри
+// decodeToolInput разбирает tool_input: объект либо JSON-строка с объектом
+// внутри. Форма определяется по первому символу, а не по неудаче разбора:
+// битый объект иначе сообщался бы как «не строка»
 func decodeToolInput(raw json.RawMessage) (map[string]any, error) {
-	var toolData map[string]any
-	if err := json.Unmarshal(raw, &toolData); err == nil {
-		return toolData, nil
+	trimmed := bytes.TrimSpace(raw)
+	if len(trimmed) == 0 {
+		return nil, fmt.Errorf("tool_input is empty")
 	}
 
-	var nested string
-	if err := json.Unmarshal(raw, &nested); err != nil {
-		return nil, fmt.Errorf("tool_input is neither an object nor a string: %w", err)
+	switch trimmed[0] {
+	case '{':
+		var toolData map[string]any
+		if err := json.Unmarshal(trimmed, &toolData); err != nil {
+			return nil, fmt.Errorf("tool_input object is malformed: %w", err)
+		}
+		return toolData, nil
+	case '"':
+		var nested string
+		if err := json.Unmarshal(trimmed, &nested); err != nil {
+			return nil, fmt.Errorf("tool_input string is malformed: %w", err)
+		}
+		var toolData map[string]any
+		if err := json.Unmarshal([]byte(nested), &toolData); err != nil {
+			return nil, fmt.Errorf("tool_input string does not contain a JSON object: %w", err)
+		}
+		return toolData, nil
+	default:
+		return nil, fmt.Errorf("tool_input is neither an object nor a string: starts with %q", trimmed[0])
 	}
-	if err := json.Unmarshal([]byte(nested), &toolData); err != nil {
-		return nil, fmt.Errorf("tool_input string does not contain a JSON object: %w", err)
-	}
-	return toolData, nil
 }
 
 // stringField извлекает строковое поле из распарсенного tool_input

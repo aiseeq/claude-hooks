@@ -83,7 +83,7 @@ func (e *Engine) ProcessPreToolUse(ctx context.Context, input *core.ToolInput) (
 
 // buildResponse собирает ответ хука по найденным нарушениям
 func buildResponse(violations []core.Violation, suggestions []string, start time.Time) *core.HookResponse {
-	level := highestLevel(violations)
+	level := core.HighestLevel(violations)
 
 	action := core.HookActionAllow
 	switch level {
@@ -102,20 +102,6 @@ func buildResponse(violations []core.Violation, suggestions []string, start time
 		Timestamp:   start,
 		ProcessTime: float64(time.Since(start).Microseconds()) / 1000,
 	}
-}
-
-// highestLevel возвращает максимальный уровень серьезности среди нарушений
-func highestLevel(violations []core.Violation) core.Level {
-	level := core.LevelInfo
-	for _, violation := range violations {
-		if violation.Severity == core.LevelCritical {
-			return core.LevelCritical
-		}
-		if violation.Severity == core.LevelWarning {
-			level = core.LevelWarning
-		}
-	}
-	return level
 }
 
 // buildMessage формирует сообщение ответа из нарушений

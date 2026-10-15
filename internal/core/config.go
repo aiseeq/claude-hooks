@@ -95,6 +95,9 @@ func DefaultConfig() *Config {
 			"jira_style": {
 				Enabled: true,
 			},
+			"draft_style": {
+				Enabled: true,
+			},
 			"notifier": {
 				Enabled:         true,
 				Sound:           true,

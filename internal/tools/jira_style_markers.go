@@ -21,6 +21,8 @@ type jiraStyleMarker struct {
 	// startsOnly: искать только в началах текстов (строки JSON и файлы тела
 	// запроса), а не во всей команде: там, где важно, с чего начат комментарий
 	startsOnly bool
+	// jiraOnly: правило только для Jira, черновики в чат его не проверяют
+	jiraOnly bool
 	// find возвращает найденный фрагмент или пустую строку
 	find func(text string) string
 }
@@ -73,12 +75,15 @@ var jiraStyleMarkers = []jiraStyleMarker{
 		description: "приветствие",
 		fix:         "в Jira сразу суть, без приветствия",
 		startsOnly:  true,
+		jiraOnly:    true,
 		find:        regexpFinder(greetingPattern),
 	},
 	{
 		description: "число прописью",
 		fix:         "число цифрами: '3 расхождения', 'из 2 операций'",
-		find:        findNumberWordMarker,
+		// В чате пользователь сам пишет "с двумя тикетами"
+		jiraOnly: true,
+		find:     findNumberWordMarker,
 	},
 }
 

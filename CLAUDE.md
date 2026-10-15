@@ -1,6 +1,6 @@
 Контекст
-- claude-hooks (github.com/aiseeq/claude-hooks) — Go-хуки для Claude Code: уведомления, строка статуса, проверка стиля Jira-комментариев. Единственный remote — `origin` (github), trunk — `main`.
-- Stop и Notification транскрипт не читают: всё нужное (`background_tasks`, `session_crons`, `notification_type`) приходит в stdin, а транскрипт в сотни МБ не укладывается в таймаут хука.
+- claude-hooks (github.com/aiseeq/claude-hooks) — Go-хуки для Claude Code: уведомления, строка статуса, проверка стиля Jira-комментариев и черновиков сообщений. Единственный remote — `origin` (github), trunk — `main`.
+- Stop и Notification транскрипт не читают: всё нужное (`background_tasks`, `session_crons`, `last_assistant_message`, `notification_type`) приходит в stdin, а транскрипт в сотни МБ не укладывается в таймаут хука.
 - Сборка и задачи — graft (`.graft.yaml`), Makefile нет. Список задач — `graft help`.
 - Хуки меняются и `graft install` запускается только по разрешению пользователя на конкретный хук: установленный бинарь сразу действует во всех сессиях. `graft install` собирает и ставит бинарь в `~/.claude/hooks`; после разрешённого изменения переустановить, иначе сессии работают со старой версией.
 - Версия — теги `v*` (`version.mode: git-tag`), файла VERSION нет. `graft build` вшивает в бинарь `graft version --describe` (`${GRAFT_VERSION}`), её и печатает `claude-hooks version`; без тегов это `v0.0.0-<коммитов>-g<hash>`.

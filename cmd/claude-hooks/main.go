@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"io"
 	"os"
@@ -15,6 +16,7 @@ import (
 	"github.com/aiseeq/claude-hooks/internal/desktop"
 	"github.com/aiseeq/claude-hooks/internal/processor"
 	"github.com/aiseeq/claude-hooks/internal/statusline"
+	"github.com/aiseeq/claude-hooks/internal/tools"
 	"github.com/aiseeq/claude-hooks/internal/tools/notifier"
 )
 
@@ -132,6 +134,10 @@ func runHook(ctx context.Context, hookType string) (int, error) {
 		saveState(logger, input.SessionID, core.StateWorking)
 		return exitAllowed, nil
 	case hookStop:
+		if reviewDrafts(data, config, logger) {
+			// Ход продолжается: о готовности скажет следующая остановка
+			return exitAllowed, nil
+		}
 		runSessionEvent(core.EventStop, data, config, logger)
 		return exitAllowed, nil
 	case hookNotification:
@@ -167,6 +173,61 @@ func runPreToolUse(ctx context.Context, data []byte, config *core.Config, logger
 	}
 	// Warn и Block одинаково возвращают 2: только этот код доносит сообщение до модели
 	return exitBlocked, nil
+}
+
+// stopFeedback ответ Stop-хука, который продолжает ход с подсказкой модели.
+// additionalContext в отличие от decision: block транскрипт показывает как
+// обратную связь хука, а не ошибку
+type stopFeedback struct {
+	HookSpecificOutput struct {
+		HookEventName     string `json:"hookEventName"`
+		AdditionalContext string `json:"additionalContext"`
+	} `json:"hookSpecificOutput"`
+}
+
+// reviewDrafts проверяет черновики текстов наружу в последнем ответе и при
+// замечаниях печатает подсказку, продолжающую ход. Возвращает true, если
+// подсказка выдана. Ход, уже продолженный stop-хуком, не проверяется: второй
+// заход по тем же признакам зациклил бы оправданный текст
+func reviewDrafts(data []byte, config *core.Config, logger core.Logger) bool {
+	toolConfig, exists := config.Tools["draft_style"]
+	if !exists || !toolConfig.Enabled {
+		return false
+	}
+	input, err := core.ParseToolInput(data)
+	if err != nil {
+		// Вход разберёт и залогирует runSessionEvent, черновики без него не проверить
+		logger.Warn("draft review skipped, stop input unreadable", "error", err)
+		return false
+	}
+	if input.StopHookActive || input.LastAssistantMessage == "" {
+		return false
+	}
+	printMode, err := core.PrintModeSession()
+	if err != nil {
+		logger.Warn("session mode unknown, reviewing drafts as interactive", "error", err)
+	}
+	if printMode {
+		return false
+	}
+
+	hint := tools.ReviewDrafts(input.LastAssistantMessage)
+	if hint == "" {
+		return false
+	}
+
+	var feedback stopFeedback
+	feedback.HookSpecificOutput.HookEventName = core.EventStop
+	feedback.HookSpecificOutput.AdditionalContext = hint
+	out, err := json.Marshal(feedback)
+	if err != nil {
+		logger.Error("draft feedback not encoded", "error", err)
+		return false
+	}
+	fmt.Println(string(out))
+	// Текст черновика в лог не идёт: это переписка с коллегами
+	logger.Info("draft feedback issued", "session", input.SessionID, "findings", strings.Count(hint, "\n- "))
+	return true
 }
 
 // runSessionEvent обрабатывает остановку и уведомление Claude Code. Всё
