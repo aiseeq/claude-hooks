@@ -14,6 +14,12 @@ tools:
   jira_style:
     enabled: true
 
+  # Блокирует kill/pkill/killall, цель которых вычисляется при запуске ($p, $(…), xargs)
+  # или задевает сессию: PID ≤ 1, systemd и графическая оболочка, предки claude,
+  # оболочка самой команды (pkill -f по шаблону, совпадающему с текстом команды)
+  kill_guard:
+    enabled: true
+
   # Уведомления: Claude Code закончил работу или ждёт ответа
   notifier:
     enabled: true

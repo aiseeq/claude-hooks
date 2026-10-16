@@ -37,6 +37,9 @@ func (e *Engine) initTools(config *core.Config) error {
 		{"jira_style", func(c core.ToolConfig, l core.Logger) (core.ToolValidator, error) {
 			return tools.NewJiraStyleTool(c, l)
 		}},
+		{"kill_guard", func(c core.ToolConfig, l core.Logger) (core.ToolValidator, error) {
+			return tools.NewKillGuardTool(c, l)
+		}},
 	}
 
 	for _, constructor := range constructors {

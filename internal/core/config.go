@@ -95,6 +95,9 @@ func DefaultConfig() *Config {
 			"jira_style": {
 				Enabled: true,
 			},
+			"kill_guard": {
+				Enabled: true,
+			},
 			"notifier": {
 				Enabled:         true,
 				Sound:           true,
