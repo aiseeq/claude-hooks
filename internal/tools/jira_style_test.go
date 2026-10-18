@@ -192,6 +192,83 @@ func TestJiraStyleAllowsLookalikes(t *testing.T) {
 	}
 }
 
+// Команды отправки, в которых маркер стоит в коде рядом с телом, а не в
+// тексте комментария: своя проверка перед отправкой, комментарий shell или
+// Python, старый текст в замене sed. Сутью переписаны с ложных блокировок
+// 09-10.2026
+func TestJiraStyleAllowsMarkersInCode(t *testing.T) {
+	const send = `curl -s -o /dev/null -w "%{http_code}\n" -u "$JIRA_EMAIL:$JIRA_API_TOKEN" -X POST ` +
+		`-H "Content-Type: application/json" --data-binary @$S/c.json "$JIRA_BASE_URL/rest/api/3/issue/PROJ-1/comment"`
+	const generator = `python3 - > $S/c.json <<'PY'
+import json
+def para(t): return {"type":"paragraph","content":[{"type":"text","text":t}]}
+print(json.dumps({"body":{"type":"doc","version":1,"content":[para("Сверка снова сходится, допуск 0.1%")]}}))
+PY
+`
+	cases := map[string]string{
+		"grep тире в двойных кавычках": generator + `grep -c "—" $S/c.json; ` + send,
+		"grep набора символов":         generator + `grep -l '—\|«\|\*\*' $S/c.json; ` + send,
+		"grep -P класса символов":      generator + `grep -n -P '[—–«»“”]' $S/c.json && ` + send,
+		"assert в генераторе": `python3 - > $S/c.json <<'PY'
+import json
+t = "Сверка снова сходится, допуск 0.1%"
+assert "—" not in t and "–" not in t and "«" not in t
+print(json.dumps({"body": t}))
+PY
+` + send,
+		"python -c с проверкой": generator +
+			`python3 -c "import sys;s=open('$S/c.json').read();print('dash' if '—' in s else 'clean')" && ` + send,
+		"комментарий в генераторе": `python3 - > $S/c.json <<'PY'
+import json
+# drop the last "Открыто" heading and append new sections
+print(json.dumps({"body": "Сверка снова сходится"}))
+PY
+` + send,
+		"комментарий shell в пакете": "# 1. Онбординг\n" + generator + send,
+		"старый текст в замене sed":  `sed -i 's/на все три проекта/на все 3 проекта/' $S/c.json; ` + send,
+	}
+	for name, command := range cases {
+		t.Run(name, func(t *testing.T) {
+			if result := validateJiraCommand(t, command); !result.IsValid {
+				t.Fatalf("маркер в коде не должен блокировать отправку: %v", result.Suggestions)
+			}
+		})
+	}
+}
+
+// Текст комментария в генераторе той же команды, который строками JSON не
+// разобрать: строки Python в одинарных кавычках, многострочный аргумент
+// функции shell, новый текст замены sed
+func TestJiraStyleBlocksTextInGenerator(t *testing.T) {
+	const send = ` curl -s -X POST --data-binary @$S/c.json "$JIRA_BASE_URL/rest/api/3/issue/PROJ-1/comment"`
+	cases := map[string]string{
+		"строка Python в одинарных кавычках": `python3 - > $S/c.json <<'EOF'
+import json
+P = lambda t: {"type":"paragraph","content":[{"type":"text","text":t}]}
+print(json.dumps({"body":{"type":"doc","version":1,"content":[P('На копии данных десять одновременных запусков отвечают за 4.3 с')]}}))
+EOF
+` + send,
+		"многострочный аргумент shell": `mk() { python3 -c 'import json,sys; print(json.dumps({"body": sys.argv[1]}))' "$1" > $S/c.json; }
+mk "Кнопка поддержки на проде с 05.10.
+Как проверить: внизу страницы нажать «Написать в поддержку», откроется почта."
+` + send,
+		"тире в строке генератора": `python3 - > $S/c.json <<'EOF'
+import json
+print(json.dumps({"body": "в колонке Slippage — статус расчёта"}))
+EOF
+` + send,
+		"новый текст замены sed": `sed -i 's/на все 3 проекта/на все три проекта/' $S/c.json;` + send,
+		"заголовок в теле":       jiraComment(t, "# Итог\nВыкачено на UAT"),
+	}
+	for name, command := range cases {
+		t.Run(name, func(t *testing.T) {
+			if result := validateJiraCommand(t, command); result.IsValid {
+				t.Fatal("нарушение в тексте комментария должно блокироваться")
+			}
+		})
+	}
+}
+
 // testLogger — логгер для тестов пакета: пишет в stderr, который go test
 // показывает только при провале
 func testLogger(t *testing.T) core.Logger {

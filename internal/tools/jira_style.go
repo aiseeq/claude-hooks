@@ -21,6 +21,28 @@ var jiraPayloadFile = regexp.MustCompile(`(?:-d|--data(?:-binary|-raw)?)[=\s]+(?
 // Чтение комментариев (GET) проверять нельзя — тире в остальной команде не относится к Jira
 var jiraWriteRequest = regexp.MustCompile(`(?i)--data(?:-binary|-raw)?\b|(?:^|\s)-d[=\s]|-X\s*(?:POST|PUT)\b|--request\s*(?:POST|PUT)\b`)
 
+// sedSubstitution замена s/старое/новое/ в sed или perl с разделителем
+// /, | или #: одна из групп - старый текст
+var sedSubstitution = regexp.MustCompile(`(?:^|[\s'"])s(?:/((?:[^/\\\n]|\\.)*)/|\|((?:[^|\\\n]|\\.)*)\||#((?:[^#\\\n]|\\.)*)#)`)
+
+// stripSedPatterns убирает из команды старый текст замен sed: правка
+// комментария после блокировки ('s/три проекта/3 проекта/') несёт в шаблоне
+// именно то, что заменяется. Новый текст остаётся и проверяется
+func stripSedPatterns(command string) string {
+	var b strings.Builder
+	last := 0
+	for _, m := range sedSubstitution.FindAllStringSubmatchIndex(command, -1) {
+		for group := 1; group <= 3; group++ {
+			if start := m[2*group]; start >= 0 {
+				b.WriteString(command[last:start])
+				last = m[2*group+1]
+			}
+		}
+	}
+	b.WriteString(command[last:])
+	return b.String()
+}
+
 // maxPayloadFileSize файл больше этого размера телом комментария не является
 const maxPayloadFileSize = 1 << 20
 
@@ -46,35 +68,38 @@ func (t *JiraStyleTool) ValidateTool(_ context.Context, input *core.ToolInput) (
 		return &core.ValidationResult{IsValid: true}, nil
 	}
 
-	texts := []string{input.Command}
-	for _, m := range jiraPayloadFile.FindAllStringSubmatch(input.Command, -1) {
+	// Текст комментария - раскодированные строки JSON (тело в -d '...',
+	// heredoc или генераторе в той же команде) и файлы тела -d @path.
+	// Остальная команда - код: шаблон grep, assert, комментарий shell. Левая
+	// часть замены sed - старый текст, который команда и убирает
+	command := stripSedPatterns(input.Command)
+	texts := jsonStrings(command)
+	var bodies []string
+	for _, m := range jiraPayloadFile.FindAllStringSubmatch(command, -1) {
 		path := m[1] + m[2] + m[3]
 		body, err := readPayloadFile(path)
 		if err != nil {
-			// Тело запроса — лишь дополнительный источник текста: команда
-			// проверяется и без него, а причина пропуска остаётся в логе
-			t.Logger().Debug("jira payload file skipped", "path", path, "error", err)
+			// Файл тела часто создаётся этой же командой или назван через
+			// переменную shell ($S/c.json): до запуска его нет. Тогда текст
+			// берётся из самой команды, пропуск файла виден в логе
+			t.Logger().Info("jira payload file unavailable, checking the command text only",
+				"path", path, "error", err)
 			continue
 		}
-		texts = append(texts, body)
+		texts = append(texts, jsonStrings(body)...)
+		bodies = append(bodies, body)
 	}
-
-	// Раскодированные строки JSON идут первыми: фрагмент в подсказке из них
-	// читается без JSON-обвязки. Начала текстов для приветствия: строки JSON
-	// и файлы тела запроса, команда целиком начинается с curl
-	var literals []string
-	for _, text := range texts {
-		literals = append(literals, jsonStrings(text)...)
-	}
-	starts := append(slices.Clone(literals), texts[1:]...)
-	everywhere := append(slices.Clone(literals), texts...)
+	// Строки JSON первыми: фрагмент в подсказке из них читается без
+	// JSON-обвязки
+	texts = append(texts, bodies...)
+	everywhere := append(slices.Clone(texts), command)
 
 	var violations []core.Violation
 	var suggestions []string
 	for _, marker := range jiraStyleMarkers {
 		scope := everywhere
-		if marker.startsOnly {
-			scope = starts
+		if marker.textOnly {
+			scope = texts
 		}
 		for _, text := range scope {
 			fragment := marker.find(text)

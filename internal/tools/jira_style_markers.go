@@ -18,9 +18,11 @@ import (
 type jiraStyleMarker struct {
 	description string
 	fix         string
-	// startsOnly: искать только в началах текстов (строки JSON и файлы тела
-	// запроса), а не во всей команде: там, где важно, с чего начат комментарий
-	startsOnly bool
+	// textOnly: искать только в тексте комментария (строки JSON и файлы тела
+	// запроса). Остальные маркеры ищутся и по всей команде: тело часто
+	// собирает генератор в той же команде из строк Python или shell, которые
+	// строками JSON не разобрать, поэтому их выражения не задевают код рядом
+	textOnly bool
 	// find возвращает найденный фрагмент или пустую строку
 	find func(text string) string
 }
@@ -30,14 +32,13 @@ const wordBoundary = `(?:^|[^\p{L}\p{N}_-])`
 
 var jiraStyleMarkers = []jiraStyleMarker{
 	{
+		// Тире между словами или в начале строки: одиночный "—" в шаблоне
+		// grep или в проверке '—' in s текстом не является. Escape-форма
+		// \u2014 в строках JSON раскодируется, по сырой команде она
+		// встречается только в коде
 		description: "длинное тире",
 		fix:         "обычный дефис с пробелами: ' - '",
-		find:        regexpFinder(regexp.MustCompile(`\S*\s*—\s*\S*`)),
-	},
-	{
-		description: "длинное тире в escape-форме",
-		fix:         "обычный дефис с пробелами: ' - '",
-		find:        regexpFinder(regexp.MustCompile(`\\u2014`)),
+		find:        regexpFinder(regexp.MustCompile(`(?m)(?:^|\S*[\p{L}\p{N}][)"»]?)[ \t]*—[ \t]*[\p{L}\p{N}]\S*`)),
 	},
 	{
 		description: "markdown-жирный",
@@ -45,14 +46,19 @@ var jiraStyleMarkers = []jiraStyleMarker{
 		find:        regexpFinder(regexp.MustCompile(`\*\*[^*\n]+\*\*`)),
 	},
 	{
+		// В строках команды "# " начинает комментарий shell или Python
 		description: "markdown-заголовок",
 		fix:         "обычный текст без решёток",
+		textOnly:    true,
 		find:        regexpFinder(regexp.MustCompile(`(?m)^#{1,6}\s.{0,30}`)),
 	},
 	{
+		// Пара кавычек с буквой или цифрой внутри: одиночная « или пустая
+		// пара в шаблоне проверки ('[—«»]', "«" not in s) текстом не является
 		description: "типографские кавычки",
 		fix:         `прямые кавычки "..." или без кавычек`,
-		find:        regexpFinder(regexp.MustCompile(`[«»“”„][^«»“”„\n]{0,30}[«»“”„]?`)),
+		find: regexpFinder(regexp.MustCompile(
+			`[«“„][^«»“”„'"\n]{0,40}[\p{L}\p{N}][^«»“”„'"\n]{0,40}[»”“]`)),
 	},
 	{
 		description: "оборот 'X, а не Y'",
@@ -72,7 +78,7 @@ var jiraStyleMarkers = []jiraStyleMarker{
 	{
 		description: "приветствие",
 		fix:         "в Jira сразу суть, без приветствия",
-		startsOnly:  true,
+		textOnly:    true,
 		find:        regexpFinder(greetingPattern),
 	},
 	{
