@@ -20,7 +20,7 @@ func TestCheckDraftFindsFormViolations(t *testing.T) {
 		"**Итог:** сделано":                Bold.Description,
 		"## Итог":                          Heading.Description,
 		"| Что | Кто |":                    MarkdownTable.Description,
-		"Смотри [тикет](https://x/PROJ-1)":   MarkdownLink.Description,
+		"Смотри [тикет](https://x/PROJ-1)": MarkdownLink.Description,
 		"Статус «в работе»":                TypographicQuotes.Description,
 		"Перезаписывает, а не дописывает":  ButNot.Description,
 		"Это не баг кода, а данные":        ThisIsNotBut.Description,
