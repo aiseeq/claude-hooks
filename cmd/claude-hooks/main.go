@@ -15,6 +15,7 @@ import (
 	"github.com/aiseeq/claude-hooks/internal/desktop"
 	"github.com/aiseeq/claude-hooks/internal/processor"
 	"github.com/aiseeq/claude-hooks/internal/statusline"
+	"github.com/aiseeq/claude-hooks/internal/textstyle"
 	"github.com/aiseeq/claude-hooks/internal/tools/notifier"
 )
 
@@ -47,7 +48,7 @@ func execute() int {
 	rootCmd := &cobra.Command{
 		Use:           "claude-hooks",
 		Short:         "Claude Code hooks processor",
-		Long:          "Обработчик хуков Claude Code: уведомления о завершении и ожидании ответа, строка статуса, проверка стиля Jira-комментариев.",
+		Long:          "Обработчик хуков Claude Code: уведомления о завершении и ожидании ответа, строка статуса, проверка стиля Jira-комментариев и черновиков текста.",
 		SilenceUsage:  true,
 		SilenceErrors: true,
 		RunE: func(cmd *cobra.Command, args []string) error {
@@ -68,6 +69,7 @@ func execute() int {
 		newStatusLineCmd(),
 		newConfigCmd(),
 		newVersionCmd(),
+		newStyleCmd(&exitCode),
 		newDeliverAlertCmd(),
 	)
 
@@ -567,4 +569,58 @@ func newVersionCmd() *cobra.Command {
 			fmt.Printf("claude-hooks %s\n", Version)
 		},
 	}
+}
+
+// Exit-коды команды style: 1 значит, что в черновике есть нарушения, 2 -
+// черновик не прочитан. Код ошибки отличается, чтобы непрочитанный файл не
+// выглядел замечаниями к тексту
+const (
+	exitStyleViolations = 1
+	exitStyleError      = 2
+)
+
+// newStyleCmd создает команду проверки черновика текста от имени пользователя
+func newStyleCmd(exitCode *int) *cobra.Command {
+	return &cobra.Command{
+		Use:   "style <файл|->",
+		Short: "Проверить черновик текста по форме write-as-user",
+		Long: `Ищет в черновике (файл или stdin при "-") маркеры, которые запрещает скилл
+write-as-user: длинное и короткое тире, markdown, типографские кавычки, оборот
+"X, а не Y", число прописью, десятичную запятую, эмодзи, предисловия.
+Печатает найденное с номерами строк. Код выхода 0 - нарушений нет,
+1 - есть нарушения, 2 - черновик не прочитан.`,
+		Args: cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			text, err := readDraft(cmd.InOrStdin(), args[0])
+			if err != nil {
+				*exitCode = exitStyleError
+				return err
+			}
+			findings := textstyle.CheckDraft(text)
+			out := cmd.OutOrStdout()
+			for _, f := range findings {
+				fmt.Fprintf(out, "%d: %s: %q, нужно: %s\n", f.Line, f.Marker.Description, f.Fragment, f.Marker.Fix)
+			}
+			if len(findings) > 0 {
+				*exitCode = exitStyleViolations
+			}
+			return nil
+		},
+	}
+}
+
+// readDraft читает черновик из файла или stdin ("-")
+func readDraft(stdin io.Reader, path string) (string, error) {
+	if path == "-" {
+		data, err := io.ReadAll(stdin)
+		if err != nil {
+			return "", fmt.Errorf("read draft from stdin: %w", err)
+		}
+		return string(data), nil
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return "", fmt.Errorf("read draft: %w", err)
+	}
+	return string(data), nil
 }

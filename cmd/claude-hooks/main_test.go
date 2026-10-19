@@ -2,8 +2,10 @@ package main
 
 import (
 	"encoding/json"
+	"io"
 	"os"
 	"path/filepath"
+	"strings"
 	"syscall"
 	"testing"
 	"time"
@@ -114,5 +116,40 @@ func TestRunSessionEvent_BrokenTaskBookkeepingKeepsPause(t *testing.T) {
 	runSessionEvent(core.EventStop, stopInput(t, "s3", "/nonexistent.jsonl", shell, []map[string]any{}), config, logger)
 	if state, err := core.LoadSessionState("s3"); err != nil || state != core.StatePaused {
 		t.Errorf("при сбое учёта ожидалась пауза: %q, %v", state, err)
+	}
+}
+
+// runStyle запускает команду style и возвращает её вывод и exit-код
+func runStyle(t *testing.T, stdin string, args ...string) (string, int) {
+	t.Helper()
+	exitCode := exitAllowed
+	cmd := newStyleCmd(&exitCode)
+	var out strings.Builder
+	cmd.SetIn(strings.NewReader(stdin))
+	cmd.SetOut(&out)
+	cmd.SetErr(io.Discard)
+	cmd.SetArgs(args)
+	if err := cmd.Execute(); err != nil && exitCode == exitAllowed {
+		t.Fatalf("ошибка без exit-кода: %v", err)
+	}
+	return out.String(), exitCode
+}
+
+func TestStyleCmdExitCodes(t *testing.T) {
+	out, code := runStyle(t, "Ок\nГотово — выкачено\n", "-")
+	if code != exitStyleViolations || !strings.HasPrefix(out, "2: длинное тире") {
+		t.Fatalf("нарушение: код %d, вывод %q", code, out)
+	}
+
+	draft := filepath.Join(t.TempDir(), "draft.txt")
+	if err := os.WriteFile(draft, []byte("Выкатил в тест - глянь =)"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if out, code := runStyle(t, "", draft); code != exitAllowed || out != "" {
+		t.Fatalf("чистый черновик: код %d, вывод %q", code, out)
+	}
+
+	if _, code := runStyle(t, "", filepath.Join(t.TempDir(), "missing.txt")); code != exitStyleError {
+		t.Fatalf("непрочитанный файл: код %d, нужно %d", code, exitStyleError)
 	}
 }

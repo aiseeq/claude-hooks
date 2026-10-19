@@ -102,11 +102,11 @@ func (t *JiraStyleTool) ValidateTool(_ context.Context, input *core.ToolInput) (
 			scope = texts
 		}
 		for _, text := range scope {
-			fragment := marker.find(text)
+			fragment := marker.Find(text)
 			if fragment == "" {
 				continue
 			}
-			suggestion := fmt.Sprintf("%s: %q, нужно: %s", marker.description, strings.TrimSpace(fragment), marker.fix)
+			suggestion := fmt.Sprintf("%s: %q, нужно: %s", marker.Description, strings.TrimSpace(fragment), marker.Fix)
 			violations = append(violations, core.NewViolation(
 				"jira_comment_style",
 				// Сообщение одно на все нарушения: ответ хука показывает
