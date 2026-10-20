@@ -7,6 +7,7 @@ import (
 	"io"
 	"os"
 	"strings"
+	"time"
 
 	"github.com/aiseeq/claude-hooks/internal/core"
 	"github.com/aiseeq/claude-hooks/internal/desktop"
@@ -34,7 +35,15 @@ const (
 const (
 	contextWarnPercent     = 60
 	contextCriticalPercent = 85
-	contextBarSegments     = 10
+)
+
+// barSegments — клеток в полосе доли; клетка — 10%
+const barSegments = 10
+
+// Недельное окно лимита и ровный темп: вся неделя за 168 часов
+const (
+	weekWindow        = 168 * time.Hour
+	evenWeeklyPercent = 100.0 / 168
 )
 
 // Input описывает данные, которые Claude Code передаёт строке статуса
@@ -84,13 +93,18 @@ func Render(ctx context.Context, stdin io.Reader, logger core.Logger) (string, e
 		return "", fmt.Errorf("failed to parse status line input: %w", err)
 	}
 
-	if limit := input.RateLimits.SevenDay; limit != nil {
-		if err := recordWeeklyLimit(*limit); err != nil {
+	now := time.Now()
+	limit := input.RateLimits.SevenDay
+	if week, ok := limit.usage(); ok {
+		if err := recordWeeklyLimit(week, now); err != nil {
 			logger.Warn("weekly limit not saved", "error", err)
 		}
+	} else if limit != nil {
+		logger.Warn("weekly limit incomplete or invalid, not shown",
+			"has_used_percentage", limit.UsedPercentage != nil, "has_resets_at", limit.ResetsAt != nil)
 	}
 
-	line, title := build(ctx, input, logger)
+	line, title := build(ctx, input, now, logger)
 	if err := desktop.SetTerminalTitle(title); err != nil {
 		logger.Warn("terminal title not set", "error", err)
 	}
@@ -101,7 +115,7 @@ func Render(ctx context.Context, stdin io.Reader, logger core.Logger) (string, e
 // build собирает строку статуса и заголовок окна. Сбои источников (состояние
 // сессии, git) строку не срывают: она рисуется по тому, что удалось прочитать,
 // а сбой уходит в лог
-func build(ctx context.Context, input Input, logger core.Logger) (string, string) {
+func build(ctx context.Context, input Input, now time.Time, logger core.Logger) (string, string) {
 	dir := sessionDir(input)
 	state, err := core.LoadSessionState(input.SessionID)
 	if err != nil {
@@ -127,7 +141,7 @@ func build(ctx context.Context, input Input, logger core.Logger) (string, string
 		output.WriteString(dim + " ⑂" + worktree + reset)
 	}
 
-	for _, part := range details(input, git) {
+	for _, part := range details(input, git, now) {
 		output.WriteString(dim + " · " + reset + part)
 	}
 
@@ -167,7 +181,7 @@ func projectBadge(dir string, state core.SessionState, contextUsed float64) stri
 }
 
 // details собирает вторую строку из доступных сведений
-func details(input Input, git GitStatus) []string {
+func details(input Input, git GitStatus, now time.Time) []string {
 	var parts []string
 
 	if git.IsRepo {
@@ -183,6 +197,10 @@ func details(input Input, git GitStatus) []string {
 
 	if used := input.ContextWindow.UsedPercentage; used > 0 {
 		parts = append(parts, contextBar(used))
+	}
+
+	if week, ok := input.RateLimits.SevenDay.usage(); ok {
+		parts = append(parts, weeklyBar(week, now))
 	}
 
 	if added, removed := input.Cost.LinesAdded, input.Cost.LinesRemoved; added > 0 || removed > 0 {
@@ -239,11 +257,6 @@ func gitCounts(git GitStatus) string {
 
 // contextBar рисует полосу заполнения контекстного окна
 func contextBar(used float64) string {
-	if used > 100 {
-		used = 100
-	}
-
-	filled := int(used) * contextBarSegments / 100
 	color := green
 	switch {
 	case used >= contextCriticalPercent:
@@ -251,9 +264,76 @@ func contextBar(used float64) string {
 	case used >= contextWarnPercent:
 		color = yellow
 	}
+	return meter("ctx", used, color, "")
+}
 
-	bar := strings.Repeat("▓", filled) + strings.Repeat("░", contextBarSegments-filled)
-	return fmt.Sprintf("%sctx %s%s %.0f%%%s", dim, color, bar, used, reset)
+// weeklyBar рисует долю недельного лимита. Цвет — по прогнозу на сброс,
+// ▲ — тратится быстрее ровного темпа
+func weeklyBar(week weeklyUsage, now time.Time) string {
+	switch weeklyPace(week, now) {
+	case paceOver:
+		return meter("нед", week.used, red, " ▲")
+	case paceFast:
+		return meter("нед", week.used, yellow, " ▲")
+	default:
+		return meter("нед", week.used, green, "")
+	}
+}
+
+// meter рисует долю полосой: подпись, клетки, проценты и пометка. Одна форма
+// для контекста и недели, цвет выбирает вызывающий
+func meter(label string, used float64, color, mark string) string {
+	if used > 100 {
+		used = 100
+	}
+
+	filled := int(used) * barSegments / 100
+	bar := strings.Repeat("▓", filled) + strings.Repeat("░", barSegments-filled)
+	return fmt.Sprintf("%s%s %s%s %.0f%%%s%s", dim, label, color, bar, used, mark, reset)
+}
+
+// pace — прогноз недельного лимита
+type pace int
+
+const (
+	// paceEven — не быстрее ровного темпа, до сброса хватит
+	paceEven pace = iota
+	// paceFast — быстрее ровного темпа, но до сброса хватит
+	paceFast
+	// paceOver — лимит кончится до сброса
+	paceOver
+)
+
+// weeklyPace прогнозирует неделю по среднему темпу с начала окна.
+// Окно — 168 часов до resets_at; now передаёт вызывающий, чтобы расчёт
+// не зависел от часов машины
+func weeklyPace(week weeklyUsage, now time.Time) pace {
+	elapsed := now.Sub(week.resetsAt.Add(-weekWindow)).Hours()
+	if elapsed <= 0 {
+		// Окно только началось: темп за нулевое время не определён. Ничего
+		// не потрачено — ровно; уже потрачено — темп без предела, кончится
+		if week.used > 0 {
+			return paceOver
+		}
+		return paceEven
+	}
+
+	// Сброс уже прошёл, а замер старый: часов до сброса не осталось
+	remaining := max(week.resetsAt.Sub(now).Hours(), 0)
+	rate := week.used / elapsed
+	return classifyPace(rate, week.used+rate*remaining)
+}
+
+// classifyPace относит темп (% в час) и прогноз на сброс (%) к цвету
+func classifyPace(rate, projected float64) pace {
+	switch {
+	case projected > 100:
+		return paceOver
+	case rate > evenWeeklyPercent:
+		return paceFast
+	default:
+		return paceEven
+	}
 }
 
 // sessionDir — каталог, где запущена сессия: им называется проект в плашке и

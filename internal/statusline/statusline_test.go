@@ -5,6 +5,7 @@ import (
 	"regexp"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/aiseeq/claude-hooks/internal/core"
 )
@@ -129,7 +130,7 @@ func TestDetails(t *testing.T) {
 	input.Cost.LinesAdded = 412
 	input.Cost.LinesRemoved = 87
 
-	parts := details(input, GitStatus{IsRepo: true, Branch: "main", Counted: true})
+	parts := details(input, GitStatus{IsRepo: true, Branch: "main", Counted: true}, time.Now())
 
 	expected := []string{"main", "Opus 5·high", "ctx ▓▓▓▓░░░░░░ 47%", "+412 −87"}
 	if len(parts) != len(expected) {
@@ -163,7 +164,7 @@ func TestBuildFitsSingleLine(t *testing.T) {
 	input.Model.DisplayName = "Opus 5 (1M context)"
 	input.ContextWindow.UsedPercentage = 47
 
-	line, title := build(context.Background(), input, testLogger(t))
+	line, title := build(context.Background(), input, time.Now(), testLogger(t))
 
 	if strings.Contains(line, "\n") {
 		t.Errorf("строка статуса должна умещаться в одну строку: %q", line)
@@ -178,7 +179,7 @@ func TestBuildFitsSingleLine(t *testing.T) {
 
 func TestDetailsSkipsMissingData(t *testing.T) {
 	// Claude Code передаёт не все поля: пустые сведения не должны давать пустых разделителей
-	if parts := details(Input{}, GitStatus{}); len(parts) != 0 {
+	if parts := details(Input{}, GitStatus{}, time.Now()); len(parts) != 0 {
 		t.Errorf("ожидался пустой список, получено %q", parts)
 	}
 }
@@ -219,4 +220,115 @@ func testLogger(t *testing.T) core.Logger {
 		t.Fatalf("не удалось создать логгер: %v", err)
 	}
 	return logger
+}
+
+// Сброс 26.10 10:00Z — окно с 19.10 10:00Z
+var weekResets = time.Date(2026, 10, 26, 10, 0, 0, 0, time.UTC)
+
+func TestWeeklyBar(t *testing.T) {
+	windowStart := weekResets.Add(-weekWindow)
+	tests := []struct {
+		name     string
+		used     float64
+		now      time.Time
+		color    string
+		expected string
+	}{
+		{
+			// 51% за 30 часов: темп 1,7%/ч, к сбросу ~286%
+			name: "кончится до сброса", used: 51, now: time.Date(2026, 10, 20, 15, 58, 0, 0, time.UTC),
+			color: red, expected: "нед ▓▓▓▓▓░░░░░ 51% ▲",
+		},
+		{
+			// 30% за половину недели: темп ниже ровного, к сбросу 60%
+			name: "хватит", used: 30, now: windowStart.Add(84 * time.Hour),
+			color: green, expected: "нед ▓▓▓░░░░░░░ 30%",
+		},
+		{
+			name: "сразу после сброса ничего не потрачено", used: 0, now: windowStart,
+			color: green, expected: "нед ░░░░░░░░░░ 0%",
+		},
+		{
+			// Темп за нулевое время не делится: потраченное сразу — кончится
+			name: "сразу после сброса уже потрачено", used: 3, now: windowStart,
+			color: red, expected: "нед ░░░░░░░░░░ 3% ▲",
+		},
+		{
+			name: "часы машины раньше начала окна", used: 3, now: windowStart.Add(-time.Hour),
+			color: red, expected: "нед ░░░░░░░░░░ 3% ▲",
+		},
+		{
+			// Сброс прошёл, замер старый: прогноз — то, что уже потрачено
+			name: "замер после сброса", used: 40, now: weekResets.Add(2 * time.Hour),
+			color: green, expected: "нед ▓▓▓▓░░░░░░ 40%",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := weeklyBar(weeklyUsage{used: tt.used, resetsAt: weekResets}, tt.now)
+			if plain(got) != tt.expected {
+				t.Errorf("получено %q, ожидалось %q", plain(got), tt.expected)
+			}
+			if !strings.Contains(got, tt.color+"▓") && !strings.Contains(got, tt.color+"░") {
+				t.Errorf("полоса не того цвета: %q", got)
+			}
+		})
+	}
+}
+
+// По одному замеру прогноз = темп × 168 ч, поэтому жёлтый проверяется на
+// самой классификации: темп выше ровного, а прогноз ещё в пределах лимита
+func TestClassifyPace(t *testing.T) {
+	tests := []struct {
+		name      string
+		rate      float64
+		projected float64
+		expected  pace
+	}{
+		{name: "ровно", rate: evenWeeklyPercent, projected: 100, expected: paceEven},
+		{name: "медленнее ровного", rate: 0.3, projected: 50, expected: paceEven},
+		{name: "быстрее ровного, но хватит", rate: 0.7, projected: 95, expected: paceFast},
+		{name: "кончится до сброса", rate: 0.7, projected: 101, expected: paceOver},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := classifyPace(tt.rate, tt.projected); got != tt.expected {
+				t.Errorf("classifyPace(%v, %v) = %v, ожидалось %v", tt.rate, tt.projected, got, tt.expected)
+			}
+		})
+	}
+}
+
+func TestDetailsWeekly(t *testing.T) {
+	now := time.Date(2026, 10, 20, 15, 58, 0, 0, time.UTC)
+	used, resets := 51.0, weekResets.Unix()
+
+	input := Input{}
+	input.ContextWindow.UsedPercentage = 47
+	input.RateLimits.SevenDay = &WeeklyLimit{UsedPercentage: &used, ResetsAt: &resets}
+	parts := details(input, GitStatus{}, now)
+	expected := []string{"ctx ▓▓▓▓░░░░░░ 47%", "нед ▓▓▓▓▓░░░░░ 51% ▲"}
+	if len(parts) != len(expected) {
+		t.Fatalf("ожидалось %q, получено %q", expected, parts)
+	}
+	for i, want := range expected {
+		if got := plain(parts[i]); got != want {
+			t.Errorf("элемент %d: ожидалось %q, получено %q", i, want, got)
+		}
+	}
+
+	// Без seven_day или без resets_at блока нет совсем, нулей вместо него тоже
+	for name, limit := range map[string]*WeeklyLimit{
+		"нет seven_day": nil,
+		"нет resets_at": {UsedPercentage: &used},
+		"нет процента":  {ResetsAt: &resets},
+	} {
+		input.RateLimits.SevenDay = limit
+		for _, part := range details(input, GitStatus{}, now) {
+			if strings.Contains(plain(part), "нед") {
+				t.Errorf("%s: блок недели не должен выводиться, получено %q", name, plain(part))
+			}
+		}
+	}
 }

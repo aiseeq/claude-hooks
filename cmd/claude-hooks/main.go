@@ -537,7 +537,8 @@ func newStatusLineCmd() *cobra.Command {
 		Use:   "statusline",
 		Short: "Отрисовать строку статуса Claude Code",
 		Long: `Читает JSON сессии со stdin и печатает две строки статуса:
-плашку с именем проекта и подробности о ветке, модели и контексте.
+плашку с именем проекта и подробности о ветке, модели, контексте
+и недельном лимите подписки.
 
 Подключается в ~/.claude/settings.json:
   "statusLine": {"type": "command", "command": "~/.claude/hooks/claude-hooks statusline"}`,

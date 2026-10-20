@@ -10,10 +10,26 @@ import (
 
 // WeeklyLimit — доля недельного лимита подписки, как её отдаёт Claude Code
 // в rate_limits.seven_day. Поле приходит только подписчикам Pro и Max и только
-// после первого ответа API в сессии
+// после первого ответа API в сессии. Поля — указатели: пропавшее значение
+// отличается от нуля, а ноль процентов — настоящий замер
 type WeeklyLimit struct {
-	UsedPercentage float64 `json:"used_percentage"`
-	ResetsAt       int64   `json:"resets_at"`
+	UsedPercentage *float64 `json:"used_percentage"`
+	ResetsAt       *int64   `json:"resets_at"`
+}
+
+// weeklyUsage — проверенный замер недели: обе величины пришли
+type weeklyUsage struct {
+	used     float64
+	resetsAt time.Time
+}
+
+// usage проверяет замер. Без поля seven_day, без любой из величин или с
+// отрицательной долей замера нет: ни снимок, ни полоса не строятся по нулям
+func (l *WeeklyLimit) usage() (weeklyUsage, bool) {
+	if l == nil || l.UsedPercentage == nil || l.ResetsAt == nil || *l.ResetsAt <= 0 || *l.UsedPercentage < 0 {
+		return weeklyUsage{}, false
+	}
+	return weeklyUsage{used: *l.UsedPercentage, resetsAt: time.Unix(*l.ResetsAt, 0)}, true
 }
 
 // limitsSnapshot — последний снимок недельного лимита на диске. Его читает
@@ -40,21 +56,21 @@ func LimitsFile() (string, error) {
 }
 
 // recordWeeklyLimit пишет снимок по пути из LimitsFile
-func recordWeeklyLimit(limit WeeklyLimit) error {
+func recordWeeklyLimit(week weeklyUsage, now time.Time) error {
 	path, err := LimitsFile()
 	if err != nil {
 		return err
 	}
-	return saveWeeklyLimit(path, limit, time.Now())
+	return saveWeeklyLimit(path, week, now)
 }
 
 // saveWeeklyLimit записывает снимок атомарно: страница может читать файл
 // в момент, когда статусная строка его пишет
-func saveWeeklyLimit(path string, limit WeeklyLimit, now time.Time) error {
+func saveWeeklyLimit(path string, week weeklyUsage, now time.Time) error {
 	data, err := json.Marshal(limitsSnapshot{
 		At:       now.Format(time.RFC3339),
-		SevenDay: limit.UsedPercentage,
-		ResetsAt: time.Unix(limit.ResetsAt, 0).Format(time.RFC3339),
+		SevenDay: week.used,
+		ResetsAt: week.resetsAt.Format(time.RFC3339),
 	})
 	if err != nil {
 		return fmt.Errorf("failed to encode the limits snapshot: %w", err)

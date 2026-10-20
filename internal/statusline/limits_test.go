@@ -11,8 +11,8 @@ import (
 func TestSaveWeeklyLimit(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "claude-hooks", "limits.json")
 	now := time.Date(2026, 10, 20, 12, 0, 0, 0, time.UTC)
-	limit := WeeklyLimit{UsedPercentage: 38, ResetsAt: time.Date(2026, 10, 26, 10, 0, 0, 0, time.UTC).Unix()}
-	if err := saveWeeklyLimit(path, limit, now); err != nil {
+	week := weeklyUsage{used: 38, resetsAt: time.Date(2026, 10, 26, 10, 0, 0, 0, time.UTC)}
+	if err := saveWeeklyLimit(path, week, now); err != nil {
 		t.Fatal(err)
 	}
 	raw, err := os.ReadFile(path)
@@ -29,7 +29,7 @@ func TestSaveWeeklyLimit(t *testing.T) {
 	if at, _ := time.Parse(time.RFC3339, got.At); !at.Equal(now) {
 		t.Errorf("время снимка %q", got.At)
 	}
-	if resets, _ := time.Parse(time.RFC3339, got.ResetsAt); resets.Unix() != limit.ResetsAt {
+	if resets, _ := time.Parse(time.RFC3339, got.ResetsAt); !resets.Equal(week.resetsAt) {
 		t.Errorf("сброс %q", got.ResetsAt)
 	}
 	// временные файлы не остаются рядом со снимком
@@ -50,7 +50,37 @@ func TestInputWithoutRateLimits(t *testing.T) {
 	if err := json.Unmarshal([]byte(`{"rate_limits":{"seven_day":{"used_percentage":38.5,"resets_at":1793000000}}}`), &input); err != nil {
 		t.Fatal(err)
 	}
-	if l := input.RateLimits.SevenDay; l == nil || l.UsedPercentage != 38.5 || l.ResetsAt != 1793000000 {
-		t.Errorf("rate_limits разобран неверно: %+v", l)
+	week, ok := input.RateLimits.SevenDay.usage()
+	if !ok || week.used != 38.5 || week.resetsAt.Unix() != 1793000000 {
+		t.Errorf("rate_limits разобран неверно: %+v", week)
+	}
+}
+
+// Неполный замер не превращается в нули: без любой величины замера нет,
+// а ноль процентов при известном сбросе — настоящий замер
+func TestWeeklyUsageRequiresBothValues(t *testing.T) {
+	tests := []struct {
+		name string
+		json string
+		ok   bool
+	}{
+		{name: "нет rate_limits", json: `{}`, ok: false},
+		{name: "нет seven_day", json: `{"rate_limits":{}}`, ok: false},
+		{name: "нет resets_at", json: `{"rate_limits":{"seven_day":{"used_percentage":51}}}`, ok: false},
+		{name: "нет used_percentage", json: `{"rate_limits":{"seven_day":{"resets_at":1793000000}}}`, ok: false},
+		{name: "resets_at ноль", json: `{"rate_limits":{"seven_day":{"used_percentage":51,"resets_at":0}}}`, ok: false},
+		{name: "отрицательная доля", json: `{"rate_limits":{"seven_day":{"used_percentage":-1,"resets_at":1793000000}}}`, ok: false},
+		{name: "ноль процентов", json: `{"rate_limits":{"seven_day":{"used_percentage":0,"resets_at":1793000000}}}`, ok: true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var input Input
+			if err := json.Unmarshal([]byte(tt.json), &input); err != nil {
+				t.Fatal(err)
+			}
+			if _, ok := input.RateLimits.SevenDay.usage(); ok != tt.ok {
+				t.Errorf("usage() ok = %v, ожидалось %v", ok, tt.ok)
+			}
+		})
 	}
 }
