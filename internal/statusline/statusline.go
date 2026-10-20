@@ -40,11 +40,12 @@ const (
 // barSegments — клеток в полосе доли; клетка — 10%
 const barSegments = 10
 
-// Недельное окно лимита и ровный темп: вся неделя за 168 часов
-const (
-	weekWindow        = 168 * time.Hour
-	evenWeeklyPercent = 100.0 / 168
-)
+// weekWindow — недельное окно лимита: 168 часов до resets_at
+const weekWindow = 168 * time.Hour
+
+// weekNearPercent — прогноз на сброс, выше которого неделя желтеет: лимита
+// хватит, но запаса почти нет
+const weekNearPercent = 80
 
 // Input описывает данные, которые Claude Code передаёт строке статуса
 type Input struct {
@@ -268,12 +269,12 @@ func contextBar(used float64) string {
 }
 
 // weeklyBar рисует долю недельного лимита. Цвет — по прогнозу на сброс,
-// ▲ — тратится быстрее ровного темпа
+// ▲ — запаса почти нет или лимит кончится
 func weeklyBar(week weeklyUsage, now time.Time) string {
 	switch weeklyPace(week, now) {
 	case paceOver:
 		return meter("нед", week.used, red, " ▲")
-	case paceFast:
+	case paceNear:
 		return meter("нед", week.used, yellow, " ▲")
 	default:
 		return meter("нед", week.used, green, "")
@@ -296,11 +297,11 @@ func meter(label string, used float64, color, mark string) string {
 type pace int
 
 const (
-	// paceEven — не быстрее ровного темпа, до сброса хватит
-	paceEven pace = iota
-	// paceFast — быстрее ровного темпа, но до сброса хватит
-	paceFast
-	// paceOver — лимит кончится до сброса
+	// paceSafe — прогноз на сброс до 80%: хватит с запасом
+	paceSafe pace = iota
+	// paceNear — прогноз больше 80% и до 100%: хватит впритык
+	paceNear
+	// paceOver — прогноз больше 100%: лимит кончится до сброса
 	paceOver
 )
 
@@ -311,28 +312,28 @@ func weeklyPace(week weeklyUsage, now time.Time) pace {
 	elapsed := now.Sub(week.resetsAt.Add(-weekWindow)).Hours()
 	if elapsed <= 0 {
 		// Окно только началось: темп за нулевое время не определён. Ничего
-		// не потрачено — ровно; уже потрачено — темп без предела, кончится
+		// не потрачено — хватит; уже потрачено — темп без предела, кончится
 		if week.used > 0 {
 			return paceOver
 		}
-		return paceEven
+		return paceSafe
 	}
 
 	// Сброс уже прошёл, а замер старый: часов до сброса не осталось
 	remaining := max(week.resetsAt.Sub(now).Hours(), 0)
 	rate := week.used / elapsed
-	return classifyPace(rate, week.used+rate*remaining)
+	return classifyPace(week.used + rate*remaining)
 }
 
-// classifyPace относит темп (% в час) и прогноз на сброс (%) к цвету
-func classifyPace(rate, projected float64) pace {
+// classifyPace относит прогноз на сброс (%) к цвету
+func classifyPace(projected float64) pace {
 	switch {
 	case projected > 100:
 		return paceOver
-	case rate > evenWeeklyPercent:
-		return paceFast
+	case projected > weekNearPercent:
+		return paceNear
 	default:
-		return paceEven
+		return paceSafe
 	}
 }
 

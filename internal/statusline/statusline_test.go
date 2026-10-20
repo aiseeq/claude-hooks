@@ -240,9 +240,14 @@ func TestWeeklyBar(t *testing.T) {
 			color: red, expected: "нед ▓▓▓▓▓░░░░░ 51% ▲",
 		},
 		{
-			// 30% за половину недели: темп ниже ровного, к сбросу 60%
-			name: "хватит", used: 30, now: windowStart.Add(84 * time.Hour),
+			// 30% за половину недели: к сбросу 60%
+			name: "хватит с запасом", used: 30, now: windowStart.Add(84 * time.Hour),
 			color: green, expected: "нед ▓▓▓░░░░░░░ 30%",
+		},
+		{
+			// 40% за 72 часа: к сбросу ~93%
+			name: "хватит впритык", used: 40, now: windowStart.Add(72 * time.Hour),
+			color: yellow, expected: "нед ▓▓▓▓░░░░░░ 40% ▲",
 		},
 		{
 			name: "сразу после сброса ничего не потрачено", used: 0, now: windowStart,
@@ -277,24 +282,23 @@ func TestWeeklyBar(t *testing.T) {
 	}
 }
 
-// По одному замеру прогноз = темп × 168 ч, поэтому жёлтый проверяется на
-// самой классификации: темп выше ровного, а прогноз ещё в пределах лимита
+// Границы цвета: 80% ещё зелёный, 100% ещё жёлтый
 func TestClassifyPace(t *testing.T) {
 	tests := []struct {
 		name      string
-		rate      float64
 		projected float64
 		expected  pace
 	}{
-		{name: "ровно", rate: evenWeeklyPercent, projected: 100, expected: paceEven},
-		{name: "медленнее ровного", rate: 0.3, projected: 50, expected: paceEven},
-		{name: "быстрее ровного, но хватит", rate: 0.7, projected: 95, expected: paceFast},
-		{name: "кончится до сброса", rate: 0.7, projected: 101, expected: paceOver},
+		{name: "с запасом", projected: 50, expected: paceSafe},
+		{name: "ровно 80", projected: 80, expected: paceSafe},
+		{name: "чуть выше 80", projected: 80.01, expected: paceNear},
+		{name: "ровно 100", projected: 100, expected: paceNear},
+		{name: "чуть выше 100", projected: 100.01, expected: paceOver},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			if got := classifyPace(tt.rate, tt.projected); got != tt.expected {
-				t.Errorf("classifyPace(%v, %v) = %v, ожидалось %v", tt.rate, tt.projected, got, tt.expected)
+			if got := classifyPace(tt.projected); got != tt.expected {
+				t.Errorf("classifyPace(%v) = %v, ожидалось %v", tt.projected, got, tt.expected)
 			}
 		})
 	}
