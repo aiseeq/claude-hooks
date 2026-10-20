@@ -64,6 +64,10 @@ type Input struct {
 	Effort struct {
 		Level string `json:"level"`
 	} `json:"effort"`
+
+	RateLimits struct {
+		SevenDay *WeeklyLimit `json:"seven_day"`
+	} `json:"rate_limits"`
 }
 
 // Render читает данные Claude Code и возвращает строку статуса.
@@ -78,6 +82,12 @@ func Render(ctx context.Context, stdin io.Reader, logger core.Logger) (string, e
 	var input Input
 	if err := json.Unmarshal(data, &input); err != nil {
 		return "", fmt.Errorf("failed to parse status line input: %w", err)
+	}
+
+	if limit := input.RateLimits.SevenDay; limit != nil {
+		if err := recordWeeklyLimit(*limit); err != nil {
+			logger.Warn("weekly limit not saved", "error", err)
+		}
 	}
 
 	line, title := build(ctx, input, logger)
