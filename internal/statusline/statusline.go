@@ -97,8 +97,17 @@ func Render(ctx context.Context, stdin io.Reader, logger core.Logger) (string, e
 	now := time.Now()
 	limit := input.RateLimits.SevenDay
 	if week, ok := limit.usage(); ok {
-		if err := recordWeeklyLimit(week, now); err != nil {
-			logger.Warn("weekly limit not saved", "error", err)
+		merged, verdict, err := recordWeeklyLimit(week, input.SessionID, now)
+		switch {
+		case err != nil:
+			// Явный failover: снимок не сведён, полоса рисуется по доле самой сессии
+			logger.Warn("weekly limit not saved, showing the session one", "error", err)
+		case verdict == weekStale:
+			// Полоса показывает свежайшую долю своей недели: своя доля
+			// сессии — из её последнего ответа API, он мог быть часы назад
+			logger.Info("stale weekly limit, showing the recorded one", "session", input.SessionID,
+				"session_used", week.used, "recorded_used", merged.used, "resets_at", week.resetsAt.Format(time.RFC3339))
+			input.RateLimits.SevenDay = merged.limit()
 		}
 	} else if limit != nil {
 		logger.Warn("weekly limit incomplete or invalid, not shown",

@@ -67,6 +67,7 @@ func execute() int {
 		newHookCmd(hookUserPromptSubmit, "Обработать UserPromptSubmit hook", &exitCode),
 		newNotifyCmd(),
 		newStatusLineCmd(),
+		newLimitsCmd(),
 		newConfigCmd(),
 		newVersionCmd(),
 		newStyleCmd(&exitCode),
@@ -559,6 +560,27 @@ func newStatusLineCmd() *cobra.Command {
 			return nil
 		},
 	}
+}
+
+// newLimitsCmd создает команду сводки недельного лимита по учёткам
+func newLimitsCmd() *cobra.Command {
+	var steps bool
+	cmd := &cobra.Command{
+		Use:   "limits",
+		Short: "Показать неделю Claude по каждой учётке",
+		Long: `Печатает недельный лимит из снимка строки статуса
+(~/.local/state/claude-hooks/limits.json): по строке на учётку - сброс недели,
+доля, когда доля до неё дошла и когда её последний раз видела строка статуса.
+Учётка узнаётся по сбросу недели: на входе строки статуса её нет.
+
+С --steps печатает журнал шагов (limits-history.jsonl) таблицей с табуляцией:
+момент, когда доля впервые дошла до значения, - по нему считается цена процента.`,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			return statusline.WriteLimits(cmd.OutOrStdout(), steps)
+		},
+	}
+	cmd.Flags().BoolVar(&steps, "steps", false, "журнал шагов вместо сводки")
+	return cmd
 }
 
 // newVersionCmd создает команду вывода версии
