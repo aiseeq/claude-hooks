@@ -20,6 +20,13 @@ tools:
   kill_guard:
     enabled: true
 
+  # Отклоняет rm/rmdir, на которые Claude Code сам спросит пользователя
+  # («Dangerous rm operation on possibly-empty variable path», даже в bypass):
+  # rm -f $S/*, "$1"/*, $X/tmp, rm -rf "$D" после D=$(pwd). Агент получает
+  # переписанную форму rm -f "${S:?}"/* и запрос пользователю не всплывает
+  rm_guard:
+    enabled: true
+
   # Уведомления: Claude Code закончил работу или ждёт ответа
   notifier:
     enabled: true

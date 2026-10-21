@@ -98,6 +98,9 @@ func DefaultConfig() *Config {
 			"kill_guard": {
 				Enabled: true,
 			},
+			"rm_guard": {
+				Enabled: true,
+			},
 			"notifier": {
 				Enabled:         true,
 				Sound:           true,
