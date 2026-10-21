@@ -101,6 +101,9 @@ func DefaultConfig() *Config {
 			"rm_guard": {
 				Enabled: true,
 			},
+			"write_guard": {
+				Enabled: true,
+			},
 			"notifier": {
 				Enabled:         true,
 				Sound:           true,

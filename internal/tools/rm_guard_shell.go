@@ -36,7 +36,20 @@ type shScript struct {
 	heredoc bool
 	// complexArith — $((…)) с подстановкой внутри
 	complexArith bool
+	// bodies тела here-doc в порядке появления
+	bodies []heredocBody
 }
+
+// heredocBody тело here-doc; compound — тело лежит внутри составной команды
+// ({ … }, ( … ), if, for, while, until, case, функция), и Claude Code
+// проверяет его строки вместе с её текстом как команды
+type heredocBody struct {
+	text     string
+	compound bool
+}
+
+// compoundOpeners слово в начале команды, открывающее составную команду, → слово, которое её закрывает
+var compoundOpeners = map[string]string{"{": "}", "if": "fi", "for": "done", "while": "done", "until": "done", "select": "done", "case": "esac"}
 
 // shLexer грубый разбор оболочки: кавычки, подстановки, here-doc, разделители
 type shLexer struct {
@@ -49,6 +62,8 @@ type shLexer struct {
 	inWord    bool
 	redirNext bool
 	heredocs  []heredocSpec
+	// closers слова, закрывающие открытые составные команды, от внешней к внутренней
+	closers []string
 }
 
 // heredocSpec ожидающее тело here-doc: строка-ограничитель и <<- (снимать табы)
@@ -77,13 +92,42 @@ func (l *shLexer) flushWord() {
 	l.raw.Reset()
 	l.text.Reset()
 	l.inWord, l.redirNext = false, false
-	if len(l.words) == 0 && (w.raw == "{" || w.raw == "}") {
-		if w.raw == "{" {
-			l.out.group = true
+	if !w.redirect && l.atCommandStart() {
+		l.trackCompound(w.raw)
+		if w.raw == "{" || w.raw == "}" {
+			if w.raw == "{" {
+				l.out.group = true
+			}
+			return
 		}
-		return
 	}
 	l.words = append(l.words, w)
+}
+
+// atCommandStart следующее слово — имя команды: перед ним только then, do, ! и подобные
+func (l *shLexer) atCommandStart() bool {
+	for _, w := range l.words {
+		if !rmKeywords[w.raw] {
+			return false
+		}
+	}
+	return true
+}
+
+// trackCompound открывает или закрывает составную команду по слову в начале команды
+func (l *shLexer) trackCompound(word string) {
+	if closer, ok := compoundOpeners[word]; ok {
+		l.closers = append(l.closers, closer)
+		return
+	}
+	l.closeCompound(word)
+}
+
+// closeCompound закрывает самую внутреннюю составную команду, если word её закрывает
+func (l *shLexer) closeCompound(word string) {
+	if n := len(l.closers); n > 0 && l.closers[n-1] == word {
+		l.closers = l.closers[:n-1]
+	}
 }
 
 func (l *shLexer) flushCmd() {
@@ -183,9 +227,11 @@ func (l *shLexer) operator(i int) (int, bool) {
 	case c == '(':
 		l.out.group = true
 		l.flushCmd()
+		l.closers = append(l.closers, ")")
 		return i + 1, true
 	case c == ')':
 		l.flushCmd()
+		l.closeCompound(")")
 		return i + 1, true
 	case c == '<' || c == '>':
 		if l.inWord && !isFD(l.raw.String()) {
@@ -336,20 +382,25 @@ func (l *shLexer) heredocDelim(i int) (heredocSpec, int) {
 	return heredocSpec{delim: b.String()}, i
 }
 
-// skipHeredocs пропускает тела ожидающих here-doc, начиная со строки i
+// skipHeredocs пропускает тела ожидающих here-doc, начиная со строки i, и
+// запоминает их текст
 func (l *shLexer) skipHeredocs(i int) int {
 	for _, d := range l.heredocs {
+		var body []string
 		for i < len(l.src) {
 			end := indexRune(l.src, '\n', i)
-			line := l.slice(i, end)
+			raw := l.slice(i, end)
 			i = end + 1
+			line := raw
 			if d.stripTabs {
 				line = strings.TrimLeft(line, "\t")
 			}
 			if line == d.delim {
 				break
 			}
+			body = append(body, raw)
 		}
+		l.out.bodies = append(l.out.bodies, heredocBody{text: strings.Join(body, "\n"), compound: len(l.closers) > 0})
 	}
 	l.heredocs = nil
 	return i

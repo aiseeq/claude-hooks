@@ -43,6 +43,9 @@ func (e *Engine) initTools(config *core.Config) error {
 		{"rm_guard", func(c core.ToolConfig, l core.Logger) (core.ToolValidator, error) {
 			return tools.NewRmGuardTool(c, l)
 		}},
+		{"write_guard", func(c core.ToolConfig, l core.Logger) (core.ToolValidator, error) {
+			return tools.NewWriteGuardTool(c, l)
+		}},
 	}
 
 	for _, constructor := range constructors {
