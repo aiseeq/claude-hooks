@@ -40,6 +40,9 @@ func (e *Engine) initTools(config *core.Config) error {
 		{"kill_guard", func(c core.ToolConfig, l core.Logger) (core.ToolValidator, error) {
 			return tools.NewKillGuardTool(c, l)
 		}},
+		{"model_guard", func(c core.ToolConfig, l core.Logger) (core.ToolValidator, error) {
+			return tools.NewModelGuardTool(c, l)
+		}},
 		{"rm_guard", func(c core.ToolConfig, l core.Logger) (core.ToolValidator, error) {
 			return tools.NewRmGuardTool(c, l)
 		}},

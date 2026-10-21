@@ -20,6 +20,10 @@ tools:
   kill_guard:
     enabled: true
 
+  # Блокирует явный выбор модели, отсутствующей в ~/.config/models/approved
+  model_guard:
+    enabled: false
+
   # Отклоняет rm/rmdir, на которые Claude Code сам спросит пользователя
   # («Dangerous rm operation on possibly-empty variable path», даже в bypass):
   # rm -f $S/*, "$1"/*, $X/tmp, rm -rf "$D" после D=$(pwd). Агент получает

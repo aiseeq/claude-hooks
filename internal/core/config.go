@@ -98,6 +98,9 @@ func DefaultConfig() *Config {
 			"kill_guard": {
 				Enabled: true,
 			},
+			"model_guard": {
+				Enabled: false,
+			},
 			"rm_guard": {
 				Enabled: true,
 			},

@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"path/filepath"
 	"sort"
 	"strings"
 	"time"
@@ -16,6 +17,7 @@ import (
 	"github.com/aiseeq/claude-hooks/internal/processor"
 	"github.com/aiseeq/claude-hooks/internal/statusline"
 	"github.com/aiseeq/claude-hooks/internal/textstyle"
+	"github.com/aiseeq/claude-hooks/internal/tools"
 	"github.com/aiseeq/claude-hooks/internal/tools/notifier"
 )
 
@@ -71,6 +73,7 @@ func execute() int {
 		newConfigCmd(),
 		newVersionCmd(),
 		newStyleCmd(&exitCode),
+		newModelScanCmd(),
 		newDeliverAlertCmd(),
 	)
 
@@ -82,6 +85,43 @@ func execute() int {
 	}
 
 	return exitCode
+}
+
+func newModelScanCmd() *cobra.Command {
+	var days int
+	cmd := &cobra.Command{
+		Use:   "model-scan [--days N] <корень транскриптов>",
+		Short: "Проверить недавние вызовы моделей в транскриптах",
+		Args:  cobra.MaximumNArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			root := ""
+			if len(args) > 0 {
+				root = args[0]
+			} else {
+				home, err := os.UserHomeDir()
+				if err != nil {
+					return err
+				}
+				root = filepath.Join(home, ".claude", "projects")
+			}
+			logger, err := core.NewLogger(core.DefaultLoggerConfig())
+			if err != nil {
+				return err
+			}
+			validator, err := tools.NewModelGuardTool(core.ToolConfig{Enabled: true}, logger)
+			if err != nil {
+				return err
+			}
+			result, err := tools.ScanModelTranscripts(cmd.Context(), root, days, validator)
+			if err != nil {
+				return err
+			}
+			tools.WriteModelScan(cmd.OutOrStdout(), result)
+			return nil
+		},
+	}
+	cmd.Flags().IntVar(&days, "days", 7, "сколько последних дней включить")
+	return cmd
 }
 
 // Имена подкоманд хуков, как их вызывает ~/.claude/settings.json
