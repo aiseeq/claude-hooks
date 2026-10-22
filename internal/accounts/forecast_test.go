@@ -21,8 +21,8 @@ func TestForecastPoolRunsDry(t *testing.T) {
 	if f.Pace != PaceOver {
 		t.Fatalf("прогноз %v, ожидался over", f.Pace)
 	}
-	// 3.5/3 + 99.5/3 + 99.5/3 ≈ 67.5 ч
-	if want := now.Add(67*time.Hour + 30*time.Minute); f.DryAt.Sub(want).Abs() > 20*time.Minute {
+	// 3/3 + 99/3 + 99/3 = 67 ч
+	if want := now.Add(67 * time.Hour); f.DryAt.Sub(want).Abs() > 20*time.Minute {
 		t.Errorf("пул пуст %v, ожидалось около %v", f.DryAt, want)
 	}
 	if f.RefillEmail != "a@example.com" || !f.RefillAt.Equal(now.Add(4*day)) {

@@ -40,8 +40,8 @@ func TestChoose(t *testing.T) {
 			want:  "b", reason: "ближе сброс",
 		},
 		{
-			name: "99% — ещё не пуста", active: "b",
-			usage: map[string]Usage{"a": week(30, 5*day), "b": week(99, 2*day), "c": week(10, 3*day)},
+			name: "98% — ещё не пуста", active: "b",
+			usage: map[string]Usage{"a": week(30, 5*day), "b": week(98, 2*day), "c": week(10, 3*day)},
 			want:  "b", reason: "активная",
 		},
 		{
@@ -52,6 +52,11 @@ func TestChoose(t *testing.T) {
 		{
 			name: "неначатая неделя — сброс через полное окно", active: "a",
 			usage: map[string]Usage{"a": week(99.5, 5*day), "b": week(97, 6*day)},
+			want:  "b", reason: "пуста",
+		},
+		{
+			name: "целые 99 строки статуса — пуста", active: "a",
+			usage: map[string]Usage{"a": week(99, 5*day), "b": week(40, 6*day)},
 			want:  "b", reason: "пуста",
 		},
 		{
