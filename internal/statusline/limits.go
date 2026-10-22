@@ -219,7 +219,15 @@ func (s *limitsSnapshot) merge(smp sample, now time.Time) mergeResult {
 	res := mergeResult{verdict: weekRaised, owner: smp.account}
 	if smp.week != nil {
 		res.merged, res.verdict, res.owner = s.mergeWeek(*smp.week, smp, stamp)
-		s.pickLatest()
+	}
+	if !smp.exact || !s.ResetsAt.After(now) {
+		// Замер API — обычно неактивной учётки: верхние поля (учётка, что
+		// тратит сейчас) он не меняет, пока их неделя не кончилась
+		active := smp.account
+		if smp.exact {
+			active = ""
+		}
+		s.pickTop(active)
 	}
 	if smp.five != nil && res.owner != "" {
 		s.mergeFive(res.owner, *smp.five, stamp)
@@ -227,39 +235,40 @@ func (s *limitsSnapshot) merge(smp sample, now time.Time) mergeResult {
 	return res
 }
 
-// mergeWeek вносит неделю. Неделя ищется по сбросу: у учёток разные недели.
-// Совпал сброс у двух учёток — берётся запись учётки замера. Возвращает
-// свежайшую долю недели, вердикт и учётку недели
+// mergeWeek вносит неделю и возвращает свежайшую долю недели, вердикт и
+// учётку недели.
+//
+// Доля во входе строки статуса — из последнего ответа API сессии, а учётка
+// замера — та, чьи токены у Claude Code сейчас; после переключения они
+// расходятся, пока сессия не сделает новый запрос (22.10 11:28 сессия
+// записала неделю новой учётки рабочей). Поэтому учётка недели узнаётся по
+// сбросу: он у каждой учётки свой и не меняется до конца недели, а у одной
+// учётки живая неделя одна. Неделя с известным сбросом — учётки этой записи;
+// новый сброс — активной, только если у неё живой недели нет, иначе неделя
+// не опознана, и её потом заберёт замер API своим токеном
 func (s *limitsSnapshot) mergeWeek(week weeklyUsage, smp sample, stamp time.Time) (weeklyUsage, weekVerdict, string) {
-	idx := -1
-	for i, rec := range s.Weeks {
-		if !rec.ResetsAt.Equal(week.resetsAt) {
-			continue
-		}
-		if smp.exact && rec.Account != smp.account && rec.Account != "" {
-			continue
-		}
-		if idx < 0 || rec.Account == smp.account {
-			idx = i
-		}
+	var idx int
+	if smp.exact {
+		idx = s.exactWeek(week, smp.account)
+	} else {
+		idx = s.renderedWeek(week, smp.account)
 	}
 	if idx < 0 {
+		owner := smp.account
+		if !smp.exact && s.liveWeek(owner) >= 0 {
+			owner = ""
+		}
 		s.Weeks = append(s.Weeks, weekRecord{
 			ResetsAt: week.resetsAt,
 			SevenDay: week.used,
 			At:       stamp,
 			SeenAt:   stamp,
 			Session:  smp.session,
-			Account:  smp.account,
+			Account:  owner,
 		})
-		return week, weekRaised, smp.account
+		return week, weekRaised, owner
 	}
 	rec := &s.Weeks[idx]
-	if rec.Account == "" {
-		// Неделя из снимка до хранилища учёток: её тратила учётка, что и
-		// сейчас у Claude Code (при установке была одна неделя одной учётки)
-		rec.Account = smp.account
-	}
 	merged := week
 	verdict := weekRaised
 	switch {
@@ -273,6 +282,85 @@ func (s *limitsSnapshot) mergeWeek(week weeklyUsage, smp sample, stamp time.Time
 		verdict = weekStale
 	}
 	return merged, verdict, rec.Account
+}
+
+// renderedWeek — запись недели замера строки статуса, -1 — новая неделя.
+// active — учётка, что сейчас у Claude Code. Сброс совпал у нескольких
+// учёток — берётся активная. Неопознанную неделю активная забирает, только
+// если своей живой недели у неё нет
+func (s *limitsSnapshot) renderedWeek(week weeklyUsage, active string) int {
+	idx := -1
+	for i, rec := range s.Weeks {
+		if !rec.ResetsAt.Equal(week.resetsAt) {
+			continue
+		}
+		if rec.Account == active {
+			return i
+		}
+		if idx < 0 || s.Weeks[idx].Account == "" {
+			idx = i
+		}
+	}
+	if idx >= 0 && s.Weeks[idx].Account == "" && active != "" && s.liveWeek(active) < 0 {
+		s.Weeks[idx].Account = active
+	}
+	return idx
+}
+
+// exactWeek — запись недели замера API учётки account, -1 — новая. Замер
+// API точен: неопознанная неделя с его сбросом — его; неделя с его сбросом,
+// приписанная учётке, у которой есть и другая живая неделя, приписана
+// ошибочно и переходит к нему; другая неделя самой учётки — ошибочная и
+// становится неопознанной. Сброс совпал с единственной неделей другой
+// учётки — у учёток общий час сброса, неделя пишется отдельно
+func (s *limitsSnapshot) exactWeek(week weeklyUsage, account string) int {
+	idx := -1
+	for i, rec := range s.Weeks {
+		if !rec.ResetsAt.Equal(week.resetsAt) {
+			continue
+		}
+		if rec.Account == account {
+			idx = i
+			break
+		}
+		if idx < 0 && (rec.Account == "" || s.weeksOf(rec.Account) > 1) {
+			idx = i
+		}
+	}
+	if idx >= 0 {
+		s.Weeks[idx].Account = account
+	}
+	for i := range s.Weeks {
+		if i != idx && s.Weeks[i].Account == account && !s.Weeks[i].ResetsAt.Equal(week.resetsAt) {
+			s.Weeks[i].Account = ""
+		}
+	}
+	return idx
+}
+
+// liveWeek — запись живой недели учётки, -1 — нет или учётка пуста.
+// Прошедшие недели merge уже убрал
+func (s *limitsSnapshot) liveWeek(account string) int {
+	if account == "" {
+		return -1
+	}
+	for i, rec := range s.Weeks {
+		if rec.Account == account {
+			return i
+		}
+	}
+	return -1
+}
+
+// weeksOf — сколько живых недель приписано учётке
+func (s *limitsSnapshot) weeksOf(account string) int {
+	n := 0
+	for _, rec := range s.Weeks {
+		if rec.Account == account {
+			n++
+		}
+	}
+	return n
 }
 
 // mergeFive вносит пятичасовое окно учётки: внутри окна доля только растёт,
@@ -294,14 +382,41 @@ func (s *limitsSnapshot) mergeFive(account string, five weeklyUsage, stamp time.
 	s.FiveHours = append(s.FiveHours, fiveRecord{Account: account, ResetsAt: five.resetsAt, Used: five.used, SeenAt: stamp})
 }
 
-// pickLatest ставит в верхние поля неделю с последним ростом доли
-func (s *limitsSnapshot) pickLatest() {
-	i := latestWeek(s.Weeks)
+// pickTop ставит в верхние поля неделю учётки active, что сейчас у Claude
+// Code, а без неё — неделю с последним ростом доли
+func (s *limitsSnapshot) pickTop(active string) {
+	i := s.liveWeek(active)
+	if i < 0 {
+		i = latestWeek(s.Weeks)
+	}
 	if i < 0 {
 		s.At, s.SevenDay, s.ResetsAt = time.Time{}, 0, time.Time{}
 		return
 	}
 	s.At, s.SevenDay, s.ResetsAt = s.Weeks[i].At, s.Weeks[i].SevenDay, s.Weeks[i].ResetsAt
+}
+
+// weekOf — живая неделя учётки по снимку; снимка нет — недели нет
+func (s *limitsSnapshot) weekOf(account string, now time.Time) (weeklyUsage, bool) {
+	if s == nil {
+		return weeklyUsage{}, false
+	}
+	for _, rec := range s.Weeks {
+		// Снимок с диска ещё хранит недели, сброс которых прошёл
+		if account != "" && rec.Account == account && rec.ResetsAt.After(now) {
+			return weeklyUsage{used: rec.SevenDay, resetsAt: rec.ResetsAt}, true
+		}
+	}
+	return weeklyUsage{}, false
+}
+
+// diskLimits читает снимок по пути из LimitsFile
+func diskLimits() (*limitsSnapshot, error) {
+	path, err := LimitsFile()
+	if err != nil {
+		return nil, err
+	}
+	return loadLimits(path)
 }
 
 // loadLimits читает снимок. Файла нет — снимок пустой. Снимок прежней формы

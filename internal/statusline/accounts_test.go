@@ -190,3 +190,132 @@ func TestSnapshotLimitsRecordExact(t *testing.T) {
 		t.Errorf("расход учёток: %+v", usage)
 	}
 }
+
+// 22.10 11:28: после входа в другую учётку и возврата на рабочую сессия
+// нарисовала долю из ответа, полученного токеном другой учётки, — новая
+// неделя ушла рабочей, а её настоящая неделя стала «неопознанной». Неделя
+// с новым сбросом не может быть рабочей, пока у той живая неделя: она
+// неопознана, пока её не заберёт замер API; полоса — неделя рабочей
+func TestRenderForeignWeekAfterSwitch(t *testing.T) {
+	isolateRender(t)
+	writeStore(t, false)
+	now := time.Now()
+	workNext := now.Add(4 * 24 * time.Hour).Truncate(time.Hour)
+	personalNext := now.Add(6 * 24 * time.Hour).Truncate(time.Hour)
+	five := now.Add(2 * time.Hour).Truncate(time.Minute)
+	renderInput(t, "lead", 96, workNext, 3, five)
+
+	line := renderInput(t, "other-project", 0, personalNext, 0, five.Add(time.Hour))
+	if !strings.Contains(line, "нед·work") || !strings.Contains(line, "96%") {
+		t.Errorf("полоса — неделя рабочей, что у Claude Code: %q", line)
+	}
+	path, err := LimitsFile()
+	if err != nil {
+		t.Fatal(err)
+	}
+	snap := readSnapshot(t, path)
+	for _, rec := range snap.Weeks {
+		if rec.ResetsAt.Equal(personalNext) && rec.Account != "" {
+			t.Errorf("чужая неделя приписана %q", rec.Account)
+		}
+	}
+	if !snap.ResetsAt.Equal(workNext) || snap.SevenDay != 96 {
+		t.Errorf("верхние поля — неделя рабочей: %v %v", snap.SevenDay, snap.ResetsAt)
+	}
+	for _, f := range snap.FiveHours {
+		if f.Account == "work@example.com" && f.Used != 3 {
+			t.Errorf("пять часов рабочей затёрты чужими: %+v", f)
+		}
+	}
+
+	// Замер API токеном личной забирает её неделю; верхние поля не меняет
+	if err := (SnapshotLimits{}).Record("personal@example.com", accounts.Window{Used: 0, ResetsAt: personalNext}, accounts.Window{}, now); err != nil {
+		t.Fatal(err)
+	}
+	snap = readSnapshot(t, path)
+	if len(snap.Weeks) != 2 || !snap.ResetsAt.Equal(workNext) {
+		t.Fatalf("недели после замера API: %+v", snap)
+	}
+	var out strings.Builder
+	if err := WriteLimits(&out, false); err != nil {
+		t.Fatal(err)
+	}
+	text := out.String()
+	for _, want := range []string{"work@example.com  ← сейчас у Claude Code\n  неделя 96%", "personal@example.com\n  неделя 0%"} {
+		if !strings.Contains(text, want) {
+			t.Errorf("в сводке нет %q:\n%s", want, text)
+		}
+	}
+	if strings.Contains(text, "неопознанных") {
+		t.Errorf("неопознанных недель быть не должно:\n%s", text)
+	}
+}
+
+// Снимок, испорченный до починки: рабочей приписаны две живые недели.
+// Замер API личной возвращает ей её неделю, рабочая остаётся со своей
+func TestRecordExactRepairsMisattributedWeek(t *testing.T) {
+	isolateRender(t)
+	writeStore(t, true)
+	now := time.Now().Truncate(time.Second)
+	workNext := now.Add(4 * 24 * time.Hour).Truncate(time.Hour)
+	personalNext := now.Add(6 * 24 * time.Hour).Truncate(time.Hour)
+	path, err := LimitsFile()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	broken := &limitsSnapshot{Weeks: []weekRecord{
+		{ResetsAt: workNext, SevenDay: 96, At: now, SeenAt: now, Account: "work@example.com"},
+		{ResetsAt: personalNext, SevenDay: 0, At: now, SeenAt: now, Account: "work@example.com"},
+	}}
+	if err := saveLimits(path, broken); err != nil {
+		t.Fatal(err)
+	}
+	if err := (SnapshotLimits{}).Record("personal@example.com", accounts.Window{Used: 0, ResetsAt: personalNext}, accounts.Window{}, now); err != nil {
+		t.Fatal(err)
+	}
+	usage, err := (SnapshotLimits{}).Usage()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if w := usage["work@example.com"].Week; w.Used != 96 || !w.ResetsAt.Equal(workNext) {
+		t.Errorf("неделя рабочей: %+v", w)
+	}
+	if w := usage["personal@example.com"].Week; !w.ResetsAt.Equal(personalNext) {
+		t.Errorf("неделя личной: %+v", w)
+	}
+	if n := len(readSnapshot(t, path).Weeks); n != 2 {
+		t.Errorf("недель %d, ожидались 2", n)
+	}
+
+	// Замер API рабочей с другим сбросом: прежняя неделя рабочей ошибочна
+	// и становится неопознанной
+	other := workNext.Add(time.Hour)
+	if err := (SnapshotLimits{}).Record("work@example.com", accounts.Window{Used: 10, ResetsAt: other}, accounts.Window{}, now); err != nil {
+		t.Fatal(err)
+	}
+	for _, rec := range readSnapshot(t, path).Weeks {
+		if rec.ResetsAt.Equal(workNext) && rec.Account != "" {
+			t.Errorf("ошибочная неделя рабочей осталась за %q", rec.Account)
+		}
+	}
+}
+
+// Сессия без доли во входе (после /login до первого запроса) рисует неделю
+// учётки, что сейчас у Claude Code, — полоса не пропадает
+func TestRenderWithoutRateLimitsShowsActiveWeek(t *testing.T) {
+	isolateRender(t)
+	writeStore(t, true)
+	now := time.Now()
+	renderInput(t, "s", 96, now.Add(4*24*time.Hour).Truncate(time.Hour), 3, now.Add(time.Hour))
+	input := fmt.Sprintf(`{"session_id":"fresh","cwd":%q}`, t.TempDir())
+	line, err := Render(context.Background(), strings.NewReader(input), testLogger(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := plain(line); !strings.Contains(got, "нед·work") || !strings.Contains(got, "96%") {
+		t.Errorf("полоса без доли во входе: %q", got)
+	}
+}

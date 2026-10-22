@@ -123,6 +123,23 @@ func Render(ctx context.Context, stdin io.Reader, logger core.Logger) (string, e
 		logger.Warn("weekly limit incomplete or invalid, not shown",
 			"has_used_percentage", limit.UsedPercentage != nil, "has_resets_at", limit.ResetsAt != nil)
 	}
+	if active := store.ActiveEmail(); active != "" && owner != active {
+		// Доля во входе — из последнего ответа API сессии: после переключения
+		// он от прежней учётки, а после /login его нет вовсе, пока сессия не
+		// сделает запрос. Полоса показывает неделю учётки, что сейчас у Claude
+		// Code, если она известна
+		if snapshot == nil {
+			var err error
+			if snapshot, err = diskLimits(); err != nil {
+				// Сбой не срывает строку статуса: полосы нет, сбой — в лог
+				logger.Warn("limits snapshot unreadable, weekly bar of the active account not shown", "error", err)
+			}
+		}
+		if week, ok := snapshot.weekOf(active, now); ok {
+			input.RateLimits.SevenDay = week.limit()
+			owner = active
+		}
+	}
 	if store != nil {
 		rotate(paths, store, snapshot, now, logger)
 	}
