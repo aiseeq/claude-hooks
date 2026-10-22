@@ -40,18 +40,23 @@ func TestChoose(t *testing.T) {
 			want:  "b", reason: "ближе сброс",
 		},
 		{
+			name: "99% — ещё не пуста", active: "b",
+			usage: map[string]Usage{"a": week(30, 5*day), "b": week(99, 2*day), "c": week(10, 3*day)},
+			want:  "b", reason: "активная",
+		},
+		{
 			name: "активная пуста — следующая по сбросу", active: "b",
-			usage: map[string]Usage{"a": week(30, 5*day), "b": week(98, 2*day), "c": week(10, 3*day)},
+			usage: map[string]Usage{"a": week(30, 5*day), "b": week(100, 2*day), "c": week(10, 3*day)},
 			want:  "c", reason: "пуста",
 		},
 		{
 			name: "неначатая неделя — сброс через полное окно", active: "a",
-			usage: map[string]Usage{"a": week(99, 5*day), "b": week(97, 6*day)},
+			usage: map[string]Usage{"a": week(99.5, 5*day), "b": week(97, 6*day)},
 			want:  "b", reason: "пуста",
 		},
 		{
 			name: "неизвестная неделя проигрывает известной", active: "a",
-			usage: map[string]Usage{"a": week(99, day), "c": week(20, 6*day)},
+			usage: map[string]Usage{"a": week(100, day), "c": week(20, 6*day)},
 			want:  "c",
 		},
 		{
@@ -66,7 +71,7 @@ func TestChoose(t *testing.T) {
 		},
 		{
 			name: "все пусты — остаётся активная", active: "a",
-			usage: map[string]Usage{"a": week(99, day), "b": week(100, 2*day), "c": week(98, 3*day)},
+			usage: map[string]Usage{"a": week(100, day), "b": week(100, 2*day), "c": week(99.5, 3*day)},
 			want:  "a", reason: "все учётки пусты",
 		},
 		{

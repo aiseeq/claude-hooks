@@ -472,7 +472,7 @@ func WriteLimits(w io.Writer, steps bool) error {
 		if store.AutoOff {
 			auto = "выключено (claude-hooks account auto on)"
 		}
-		fmt.Fprintf(w, "Автопереключение: %s; учётка пуста с %d%% недели или %d%% пяти часов, из непустых — ближайший сброс недели\n",
+		fmt.Fprintf(w, "Автопереключение: %s; учётка пуста с %g%% недели или %d%% пяти часов, из непустых — ближайший сброс недели\n",
 			auto, accounts.WeekEmptyPercent, accounts.FiveHourEmptyPercent)
 	}
 	unknown := false

@@ -101,7 +101,7 @@ func TestRotateSwitchesFromEmptyAccount(t *testing.T) {
 	f := twoAccounts(t)
 	// Сохранение второй учётки уже спрашивало расход личной: следующий запрос — после usageStale
 	f.now = f.now.Add(usageStale)
-	f.limits.set(work.email, 99, f.now.Add(4*day))
+	f.limits.set(work.email, 100, f.now.Add(4*day))
 	resets := f.now.Add(2 * day).Truncate(time.Minute)
 	f.usage["personal"] = fmt.Sprintf(`{"five_hour":{"utilization":3,"resets_at":%q},"seven_day":{"utilization":10,"resets_at":%q}}`,
 		f.now.Add(time.Hour).Format(time.RFC3339), resets.Add(-50*time.Millisecond).Format(time.RFC3339Nano))
@@ -327,7 +327,7 @@ func TestPending(t *testing.T) {
 	}
 	check("активная с ближайшим сбросом", "")
 
-	usage[work.email] = Usage{Week: Window{Used: 98, ResetsAt: f.now.Add(3 * day)}}
+	usage[work.email] = Usage{Week: Window{Used: 100, ResetsAt: f.now.Add(3 * day)}}
 	check("активная пуста", "пуста")
 	s.AutoOff = true
 	check("автопереключение выключено", "")
