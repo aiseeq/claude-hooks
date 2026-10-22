@@ -28,6 +28,7 @@ type oauth struct {
 	RefreshTokenExpiresAt int64    `json:"refreshTokenExpiresAt"`
 	Scopes                []string `json:"scopes"`
 	ClientID              string   `json:"clientId"`
+	RateLimitTier         string   `json:"rateLimitTier"`
 }
 
 func parseOAuth(raw json.RawMessage) (oauth, error) {

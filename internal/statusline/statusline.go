@@ -143,14 +143,17 @@ func Render(ctx context.Context, stdin io.Reader, logger core.Logger) (string, e
 	if store != nil {
 		rotate(paths, store, snapshot, now, logger)
 	}
-	weekLabel := "нед"
+	bar := weekBar{label: "нед"}
 	if store != nil && len(store.Accounts) > 1 && owner != "" {
 		// Учёток несколько: полоса подписана учёткой, чья неделя, без «нед»
 		// (пользователь 22.10: достаточно «<учётка> ▓▓▓▓▓▓▓▓▓░ 96%»)
-		weekLabel = store.ShortName(owner)
+		bar.label = store.ShortName(owner)
+	}
+	if store != nil && len(store.Accounts) > 0 {
+		bar.pool = poolPace(store, snapshot, now, logger)
 	}
 
-	line, title := build(ctx, input, weekLabel, now, logger)
+	line, title := build(ctx, input, bar, now, logger)
 	if err := desktop.SetTerminalTitle(title); err != nil {
 		logger.Warn("terminal title not set", "error", err)
 	}
@@ -161,7 +164,7 @@ func Render(ctx context.Context, stdin io.Reader, logger core.Logger) (string, e
 // build собирает строку статуса и заголовок окна. Сбои источников (состояние
 // сессии, git) строку не срывают: она рисуется по тому, что удалось прочитать,
 // а сбой уходит в лог
-func build(ctx context.Context, input Input, weekLabel string, now time.Time, logger core.Logger) (string, string) {
+func build(ctx context.Context, input Input, bar weekBar, now time.Time, logger core.Logger) (string, string) {
 	dir := sessionDir(input)
 	state, err := core.LoadSessionState(input.SessionID)
 	if err != nil {
@@ -187,7 +190,7 @@ func build(ctx context.Context, input Input, weekLabel string, now time.Time, lo
 		output.WriteString(dim + " ⑂" + worktree + reset)
 	}
 
-	for _, part := range details(input, git, weekLabel, now) {
+	for _, part := range details(input, git, bar, now) {
 		output.WriteString(dim + " · " + reset + part)
 	}
 
@@ -227,7 +230,7 @@ func projectBadge(dir string, state core.SessionState, contextUsed float64) stri
 }
 
 // details собирает вторую строку из доступных сведений
-func details(input Input, git GitStatus, weekLabel string, now time.Time) []string {
+func details(input Input, git GitStatus, bar weekBar, now time.Time) []string {
 	var parts []string
 
 	if git.IsRepo {
@@ -246,7 +249,7 @@ func details(input Input, git GitStatus, weekLabel string, now time.Time) []stri
 	}
 
 	if week, ok := input.RateLimits.SevenDay.usage(); ok {
-		parts = append(parts, weeklyBar(weekLabel, week, now))
+		parts = append(parts, weeklyBar(bar, week, now))
 	}
 
 	if added, removed := input.Cost.LinesAdded, input.Cost.LinesRemoved; added > 0 || removed > 0 {
@@ -313,17 +316,56 @@ func contextBar(used float64) string {
 	return meter("ctx", used, color, "")
 }
 
-// weeklyBar рисует долю недельного лимита. Цвет — по прогнозу на сброс,
-// ▲ — запаса почти нет или лимит кончится
-func weeklyBar(label string, week weeklyUsage, now time.Time) string {
-	switch weeklyPace(week, now) {
-	case paceOver:
-		return meter(label, week.used, red, " ▲")
-	case paceNear:
-		return meter(label, week.used, yellow, " ▲")
-	default:
-		return meter(label, week.used, green, "")
+// weekBar — подпись полосы недели и прогноз пула учёток; pool nil —
+// прогноза пула нет, цвет — по прогнозу одной недели
+type weekBar struct {
+	label string
+	pool  *pace
+}
+
+// weeklyBar рисует долю недельного лимита активной учётки. Цвет — прогноз:
+// пула учёток, если он есть, иначе недели на сброс. Значка нет —
+// пользователю цвета достаточно (22.10: «мне цвета достаточно в целом»)
+func weeklyBar(bar weekBar, week weeklyUsage, now time.Time) string {
+	p := weeklyPace(week, now)
+	if bar.pool != nil {
+		p = *bar.pool
 	}
+	switch p {
+	case paceOver:
+		return meter(bar.label, week.used, red, "")
+	case paceNear:
+		return meter(bar.label, week.used, yellow, "")
+	default:
+		return meter(bar.label, week.used, green, "")
+	}
+}
+
+// poolPace — прогноз пула учёток для цвета полосы. Сбой (нет снимка,
+// короткая история) — явный failover на прогноз одной недели, сбой — в лог
+func poolPace(store *accounts.Store, snapshot *limitsSnapshot, now time.Time, logger core.Logger) *pace {
+	path, err := LimitsFile()
+	if err == nil && snapshot == nil {
+		snapshot, err = diskLimits()
+	}
+	var f PoolForecast
+	if err == nil {
+		f, err = forecastPool(store, snapshot, limitsHistory(path), now)
+	}
+	if err != nil {
+		logger.Info("pool forecast unavailable, weekly bar colored by the active week", "error", err)
+		return nil
+	}
+	var p pace
+	switch f.Forecast.Pace {
+	case accounts.PaceSafe:
+		p = paceSafe
+	case accounts.PaceNear:
+		p = paceNear
+	case accounts.PaceOver:
+		p = paceOver
+	}
+	return &p
 }
 
 // meter рисует долю полосой: подпись, клетки, проценты и пометка. Одна форма

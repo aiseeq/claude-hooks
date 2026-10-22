@@ -605,7 +605,7 @@ func newStatusLineCmd() *cobra.Command {
 
 // newLimitsCmd создает команду сводки недельного лимита по учёткам
 func newLimitsCmd() *cobra.Command {
-	var steps bool
+	var steps, pool bool
 	cmd := &cobra.Command{
 		Use:   "limits",
 		Short: "Показать неделю Claude по каждой учётке",
@@ -616,12 +616,20 @@ func newLimitsCmd() *cobra.Command {
 (до хранилища) - строками без почты, по сбросу недели.
 
 С --steps печатает журнал шагов (limits-history.jsonl) таблицей с табуляцией:
-момент, когда доля впервые дошла до значения, - по нему считается цена процента.`,
+момент, когда доля впервые дошла до значения, - по нему считается цена процента.
+
+С --pool-json печатает прогноз пула учёток JSON: темп, когда все учётки
+опустеют, чей сброс вернёт расход, план ротации. Его читает страница Сна.`,
 		RunE: func(cmd *cobra.Command, args []string) error {
+			if pool {
+				return statusline.WritePoolJSON(cmd.OutOrStdout())
+			}
 			return statusline.WriteLimits(cmd.OutOrStdout(), steps)
 		},
 	}
 	cmd.Flags().BoolVar(&steps, "steps", false, "журнал шагов вместо сводки")
+	cmd.Flags().BoolVar(&pool, "pool-json", false, "прогноз пула учёток JSON вместо сводки")
+	cmd.MarkFlagsMutuallyExclusive("steps", "pool-json")
 	return cmd
 }
 

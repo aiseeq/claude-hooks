@@ -319,3 +319,57 @@ func TestRenderWithoutRateLimitsShowsActiveWeek(t *testing.T) {
 		t.Errorf("полоса без доли во входе: %q", got)
 	}
 }
+
+// Цвет полосы — прогноз пула: доля активной мала, но темп по журналу
+// опустошает обе учётки до сброса — полоса красная, без значка; сводка
+// называет момент
+func TestRenderColorsByPool(t *testing.T) {
+	isolateRender(t)
+	writeStore(t, true)
+	now := time.Now()
+	workNext := now.Add(5 * 24 * time.Hour).Truncate(time.Hour)
+	personalNext := now.Add(6 * 24 * time.Hour).Truncate(time.Hour)
+	path, err := LimitsFile()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	// 40% за 10 ч: 4% в час, двух учёток хватит на сутки с небольшим
+	var history strings.Builder
+	for i, used := range []int{10, 30, 50} {
+		history.WriteString(fmt.Sprintf(`{"at":%q,"sevenDayResetsAt":%q,"sevenDayUsedPercentage":%d,"account":"work@example.com"}`+"\n",
+			now.Add(time.Duration(i*5-10)*time.Hour).Format(time.RFC3339), workNext.Format(time.RFC3339), used))
+	}
+	if err := os.WriteFile(limitsHistory(path), []byte(history.String()), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := (SnapshotLimits{}).Record("personal@example.com", accounts.Window{Used: 50, ResetsAt: personalNext}, accounts.Window{}, now); err != nil {
+		t.Fatal(err)
+	}
+	// Сама неделя активной зелёная бы: 20% за двое суток — 70% к сбросу
+	raw := renderRaw(t, "s", 20, workNext)
+	if !strings.Contains(raw, red+"▓") || strings.Contains(raw, "▲") {
+		t.Errorf("полоса должна быть красной без значка: %q", plain(raw))
+	}
+	var out strings.Builder
+	if err := WriteLimits(&out, false); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out.String(), "Пул учёток: темп 96% недели учётки в сутки") || !strings.Contains(out.String(), "пул кончится") {
+		t.Errorf("сводка без прогноза пула:\n%s", out.String())
+	}
+}
+
+// renderRaw — строка статуса с цветами для замера недели
+func renderRaw(t *testing.T, session string, week int, resets time.Time) string {
+	t.Helper()
+	input := fmt.Sprintf(`{"session_id":%q,"cwd":%q,"rate_limits":{"seven_day":{"used_percentage":%d,"resets_at":%d}}}`,
+		session, t.TempDir(), week, resets.Unix())
+	line, err := Render(context.Background(), strings.NewReader(input), testLogger(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	return line
+}

@@ -589,6 +589,12 @@ func WriteLimits(w io.Writer, steps bool) error {
 		}
 		fmt.Fprintf(w, "Автопереключение: %s; учётка пуста с %g%% недели или %d%% пяти часов, из непустых — ближайший сброс недели\n",
 			auto, accounts.WeekEmptyPercent, accounts.FiveHourEmptyPercent)
+		f, err := forecastPool(store, snapshot, limitsHistory(path), now)
+		if err != nil {
+			fmt.Fprintf(w, "Пул учёток: прогноза нет — %v\n", err)
+		} else {
+			fmt.Fprintln(w, poolText(store, f, now))
+		}
 	}
 	unknown := false
 	for i, rec := range weeks {
