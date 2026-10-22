@@ -81,7 +81,7 @@ func TestRenderAttributesWeekToActiveAccount(t *testing.T) {
 	workNext := now.Add(4 * 24 * time.Hour).Truncate(time.Hour)
 	fiveNext := now.Add(2 * time.Hour).Truncate(time.Minute)
 
-	if line := renderInput(t, "s1", 40, workNext, 12, fiveNext); !strings.Contains(line, "нед·work") || !strings.Contains(line, "40%") {
+	if line := renderInput(t, "s1", 40, workNext, 12, fiveNext); !strings.Contains(line, "нед·work@example.com") || !strings.Contains(line, "40%") {
 		t.Errorf("полоса недели: %q", line)
 	}
 	path, err := LimitsFile()
@@ -126,11 +126,11 @@ func TestRenderAttributesWeekToActiveAccount(t *testing.T) {
 	if err := os.WriteFile(paths.Store(), []byte(strings.Replace(string(data), `"active":"u-work"`, `"active":"u-personal"`, 1)), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if line := renderInput(t, "s2", 40, workNext, 12, fiveNext); !strings.Contains(line, "нед·work") {
+	if line := renderInput(t, "s2", 40, workNext, 12, fiveNext); !strings.Contains(line, "нед·work@example.com") {
 		t.Errorf("старая сессия: %q", line)
 	}
 	personalNext := now.Add(6 * 24 * time.Hour).Truncate(time.Hour)
-	if line := renderInput(t, "s3", 1, personalNext, 1, fiveNext.Add(time.Hour)); !strings.Contains(line, "нед·personal") {
+	if line := renderInput(t, "s3", 1, personalNext, 1, fiveNext.Add(time.Hour)); !strings.Contains(line, "нед·personal@example.com") {
 		t.Errorf("новая неделя активной: %q", line)
 	}
 	snap = readSnapshot(t, path)
@@ -206,7 +206,7 @@ func TestRenderForeignWeekAfterSwitch(t *testing.T) {
 	renderInput(t, "lead", 96, workNext, 3, five)
 
 	line := renderInput(t, "other-project", 0, personalNext, 0, five.Add(time.Hour))
-	if !strings.Contains(line, "нед·work") || !strings.Contains(line, "96%") {
+	if !strings.Contains(line, "нед·work@example.com") || !strings.Contains(line, "96%") {
 		t.Errorf("полоса — неделя рабочей, что у Claude Code: %q", line)
 	}
 	path, err := LimitsFile()
@@ -315,7 +315,7 @@ func TestRenderWithoutRateLimitsShowsActiveWeek(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got := plain(line); !strings.Contains(got, "нед·work") || !strings.Contains(got, "96%") {
+	if got := plain(line); !strings.Contains(got, "нед·work@example.com") || !strings.Contains(got, "96%") {
 		t.Errorf("полоса без доли во входе: %q", got)
 	}
 }

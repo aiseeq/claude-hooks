@@ -145,3 +145,17 @@ func TestShortTime(t *testing.T) {
 		t.Errorf("ShortTime: %q", got)
 	}
 }
+
+// Имя учётки — домен почты, при общем домене — почта целиком
+func TestShortName(t *testing.T) {
+	s := &Store{Accounts: []Account{{Email: "al@company.example"}, {Email: "me@protonmail.com"}, {Email: "me+2@gmail.com"}}}
+	for email, want := range map[string]string{"al@company.example": "company.example", "me+2@gmail.com": "gmail.com", "odd": "odd"} {
+		if got := s.ShortName(email); got != want {
+			t.Errorf("ShortName(%q) = %q, ожидалось %q", email, got, want)
+		}
+	}
+	s.Accounts = append(s.Accounts, Account{Email: "other@gmail.com"})
+	if got := s.ShortName("me+2@gmail.com"); got != "me+2@gmail.com" {
+		t.Errorf("общий домен: %q", got)
+	}
+}

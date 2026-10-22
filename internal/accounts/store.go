@@ -144,6 +144,22 @@ func sameSecret(a, b string) bool {
 	return a != "" && subtle.ConstantTimeCompare([]byte(a), []byte(b)) == 1
 }
 
+// ShortName — короткое имя учётки для строки статуса: домен почты
+// (пользователь 22.10: «Имена учёток лучше брать из домена почты»). Домен
+// общий с другой учёткой хранилища — почта целиком, иначе их не различить
+func (s *Store) ShortName(email string) string {
+	_, domain, ok := strings.Cut(email, "@")
+	if !ok || domain == "" {
+		return email
+	}
+	for i := range s.Accounts {
+		if _, other, _ := strings.Cut(s.Accounts[i].Email, "@"); s.Accounts[i].Email != email && other == domain {
+			return email
+		}
+	}
+	return domain
+}
+
 // ActiveEmail — почта учётки, чьи токены сейчас у Claude Code. Пусто, если
 // учёток нет или активная не опознана
 func (s *Store) ActiveEmail() string {
