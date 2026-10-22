@@ -20,9 +20,9 @@ tools:
   kill_guard:
     enabled: true
 
-  # Напоминает агенту вызвать скилл заново, когда SKILL.md изменён после вызова:
-  # текст скилла в контексте — снимок на момент вызова (UserPromptSubmit, PostToolBatch).
-  # Без ключа включено
+  # Кладёт агенту diff правки SKILL.md, CLAUDE.md или AGENTS.md, сделанной после того,
+  # как текст попал ему в контекст; правка больше 2 КБ — просьба перечитать с
+  # перечнем разделов (UserPromptSubmit, PostToolBatch). Без ключа включено
   skill_reload:
     enabled: true
 

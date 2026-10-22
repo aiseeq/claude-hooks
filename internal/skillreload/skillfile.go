@@ -3,7 +3,9 @@ package skillreload
 import (
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
 	"fmt"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"strings"
@@ -15,25 +17,84 @@ import (
 // сам (вложение edited_text_file); снимком остаётся только SKILL.md
 const skillFileName = "SKILL.md"
 
+// fileView — отслеживаемый файл в момент проверки в том виде, в каком он
+// попал бы в контекст агента
+type fileView struct {
+	Exists  bool
+	Text    string
+	ModTime time.Time
+	Name    string // имя скилла по шапке; у файла инструкций пусто
+}
+
+// viewer — файл в момент проверки: на диске у хука, по истории в сухом прогоне
+type viewer func(kind, path string) (fileView, error)
+
+// diskView читает отслеживаемый файл с диска. Отсутствующий файл — не ошибка:
+// скилл удалён или лежал во временном каталоге, показывать нечего
+func diskView(kind, path string) (fileView, error) {
+	info, err := os.Stat(path)
+	if errors.Is(err, fs.ErrNotExist) {
+		return fileView{}, nil
+	}
+	if err != nil {
+		return fileView{}, fmt.Errorf("cannot stat %s: %w", path, err)
+	}
+	raw, err := os.ReadFile(path)
+	if errors.Is(err, fs.ErrNotExist) {
+		return fileView{}, nil
+	}
+	if err != nil {
+		return fileView{}, fmt.Errorf("cannot read %s: %w", path, err)
+	}
+	view := fileView{Exists: true, ModTime: info.ModTime()}
+	view.Text, view.Name = render(kind, path, raw)
+	return view, nil
+}
+
+// render приводит файл к виду текста в контексте и называет скилл
+func render(kind, path string, raw []byte) (text, name string) {
+	if kind == kindSkill {
+		dir := filepath.Dir(path)
+		return renderBody(raw, dir), skillName(dir, raw)
+	}
+	return renderMemory(raw), ""
+}
+
+// renderMemory приводит файл инструкций к виду в контексте: Claude Code
+// убирает HTML-комментарии и пробелы по краям
+func renderMemory(raw []byte) string {
+	text := strings.TrimPrefix(string(raw), "\uFEFF")
+	var out strings.Builder
+	for {
+		start := strings.Index(text, "<!--")
+		if start < 0 {
+			break
+		}
+		end := strings.Index(text[start:], "-->")
+		if end < 0 {
+			break
+		}
+		out.WriteString(text[:start])
+		text = text[start+end+len("-->"):]
+	}
+	out.WriteString(text)
+	return strings.TrimSpace(out.String())
+}
+
 // skillFile — SKILL.md на диске сейчас
 type skillFile struct {
-	Path    string
-	Raw     []byte
-	ModTime time.Time
+	Path string
+	Raw  []byte
 }
 
 // readSkillFile читает SKILL.md каталога скилла
 func readSkillFile(dir string) (skillFile, error) {
 	path := filepath.Join(dir, skillFileName)
-	info, err := os.Stat(path)
-	if err != nil {
-		return skillFile{}, fmt.Errorf("cannot stat skill file: %w", err)
-	}
 	raw, err := os.ReadFile(path)
 	if err != nil {
 		return skillFile{}, fmt.Errorf("cannot read skill file: %w", err)
 	}
-	return skillFile{Path: path, Raw: raw, ModTime: info.ModTime()}, nil
+	return skillFile{Path: path, Raw: raw}, nil
 }
 
 // contentHash — хеш содержимого файла: по нему, а не по времени изменения,

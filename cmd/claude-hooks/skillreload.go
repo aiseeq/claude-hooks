@@ -38,9 +38,10 @@ type hookContextOutput struct {
 	} `json:"hookSpecificOutput"`
 }
 
-// remindStaleSkills говорит агенту вызвать заново скиллы, SKILL.md которых
-// изменён после вызова. Сбой только логируется: напоминание не повод
-// показывать человеку ошибку хука на каждом ходу
+// remindStaleSkills кладёт в контекст агента правки скиллов и файлов
+// инструкций, сделанные после того, как их текст попал в контекст: diff, а
+// при большой правке — просьбу перечитать. Сбой только логируется: выдача не
+// повод показывать человеку ошибку хука на каждом ходу
 func remindStaleSkills(eventName string, input *core.ToolInput, config *core.Config, logger core.Logger) {
 	if tool, exists := config.Tools[skillReloadTool]; exists && !tool.Enabled {
 		return
@@ -68,19 +69,23 @@ func remindStaleSkills(eventName string, input *core.ToolInput, config *core.Con
 	for _, warning := range result.Warnings {
 		logger.Warn("skill reload check degraded", "hook", eventName, "session", input.SessionID, "agent", input.AgentID, "error", warning)
 	}
-	if len(result.Reminders) == 0 {
+	if len(result.Notices) == 0 {
 		return
 	}
 
-	names := make([]string, 0, len(result.Reminders))
-	for _, reminder := range result.Reminders {
-		names = append(names, reminder.Name)
+	names := make([]string, 0, len(result.Notices))
+	diffs := 0
+	for i := range result.Notices {
+		names = append(names, result.Notices[i].Name)
+		if result.Notices[i].Diff != "" {
+			diffs++
+		}
 	}
-	logger.Info("skill reload reminded", "hook", eventName, "session", input.SessionID, "agent", input.AgentID, "skills", names)
+	logger.Info("skill reload notified", "hook", eventName, "session", input.SessionID, "agent", input.AgentID, "files", names, "diffs", diffs)
 
 	var output hookContextOutput
 	output.HookSpecificOutput.HookEventName = eventName
-	output.HookSpecificOutput.AdditionalContext = skillreload.Format(result.Reminders)
+	output.HookSpecificOutput.AdditionalContext = skillreload.Format(result.Notices)
 	if err := json.NewEncoder(os.Stdout).Encode(output); err != nil {
 		logger.Warn("skill reload reminder not printed", "error", err)
 	}
@@ -90,7 +95,7 @@ func newSkillScanCmd() *cobra.Command {
 	var days int
 	cmd := &cobra.Command{
 		Use:   "skill-scan [--days N] [корень транскриптов]",
-		Short: "Сухой прогон напоминаний о скиллах, изменённых после вызова",
+		Short: "Сухой прогон выдачи правок скиллов и CLAUDE.md, сделанных после загрузки в контекст",
 		Args:  cobra.MaximumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			root := ""

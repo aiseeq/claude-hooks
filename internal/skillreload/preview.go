@@ -14,7 +14,7 @@ import (
 type PreviewResult struct {
 	Since       time.Time
 	Transcripts int
-	Reminders   map[string][]Reminder // по транскрипту
+	Notices     map[string][]Notice // по транскрипту
 	Warnings    []error
 }
 
@@ -32,7 +32,7 @@ func PreviewInstall(root string, since time.Time) (*PreviewResult, error) {
 	defer os.RemoveAll(stateDir)
 
 	checker := Checker{StateDir: stateDir}
-	result := &PreviewResult{Since: since, Reminders: map[string][]Reminder{}}
+	result := &PreviewResult{Since: since, Notices: map[string][]Notice{}}
 	for _, path := range paths {
 		event, ok := eventForTranscript(path)
 		if !ok {
@@ -44,8 +44,8 @@ func PreviewInstall(root string, since time.Time) (*PreviewResult, error) {
 			return nil, fmt.Errorf("%s: %w", path, err)
 		}
 		result.Warnings = append(result.Warnings, check.Warnings...)
-		if len(check.Reminders) > 0 {
-			result.Reminders[path] = check.Reminders
+		if len(check.Notices) > 0 {
+			result.Notices[path] = check.Notices
 		}
 	}
 	return result, nil
@@ -74,15 +74,22 @@ func eventForTranscript(path string) (Event, bool) {
 // WritePreview печатает итог проверки при установке
 func WritePreview(w io.Writer, r *PreviewResult) {
 	total := 0
-	for _, reminders := range r.Reminders {
-		total += len(reminders)
+	for _, notices := range r.Notices {
+		total += len(notices)
 	}
-	fmt.Fprintf(w, "При установке (транскрипты с %s: %d): напоминаний %d в %d транскриптах\n",
-		r.Since.Local().Format("02.01 15:04 MST"), r.Transcripts, total, len(r.Reminders))
-	for _, path := range sortedKeys(r.Reminders) {
-		for _, reminder := range r.Reminders[path] {
-			fmt.Fprintf(w, "  %s  %s (вызван %s, изменён %s)\n", path, reminder.Name,
-				localTime(reminder.LoadedAt), localTime(reminder.ChangedAt))
+	fmt.Fprintf(w, "При установке (транскрипты с %s: %d): выдач %d в %d транскриптах\n",
+		r.Since.Local().Format("02.01 15:04 MST"), r.Transcripts, total, len(r.Notices))
+	for _, path := range sortedKeys(r.Notices) {
+		for i := range r.Notices[path] {
+			n := &r.Notices[path][i]
+			form := fmt.Sprintf("diff %d Б", n.DiffBytes)
+			switch {
+			case n.Lost:
+				form = "текст потерян"
+			case n.Diff == "":
+				form = fmt.Sprintf("перечитать, diff %d Б", n.DiffBytes)
+			}
+			fmt.Fprintf(w, "  %s  %s (%s, изменён %s)\n", path, n.label(), form, localTime(n.ChangedAt))
 		}
 	}
 	fmt.Fprintf(w, "Предупреждений проверки: %d\n", len(r.Warnings))

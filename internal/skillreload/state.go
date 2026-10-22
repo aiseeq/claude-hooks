@@ -13,24 +13,70 @@ import (
 	"time"
 )
 
-// watched — скилл, вызванный в сессии, и что о нём уже сказано
+// watched — скилл или файл инструкций в контексте сессии и что о нём уже
+// сказано
 type watched struct {
+	Kind     string    `json:"kind"`
 	Name     string    `json:"name"`
+	Path     string    `json:"path"`          // файл на диске
+	Dir      string    `json:"dir,omitempty"` // каталог скилла
 	LoadedAt time.Time `json:"loaded_at"`
-	// Baseline — хеш SKILL.md, текст которого у агента в контексте. Пустой —
-	// файл отличался от снимка уже тогда, когда хук увидел вызов
-	Baseline string `json:"baseline"`
-	// Notified — хеш файла, о котором агенту уже напомнили: одна правка —
-	// одно напоминание
+	// Base — хеш текста, который сейчас у агента в контексте; сам текст —
+	// в хранилище текстов. От него считается следующий diff
+	Base string `json:"base"`
+	// Snapshot и LoadBase — хеш снимка последнего вызова скилла и база,
+	// выбранная при вызове: сжатие подкладывает тот же снимок, и база
+	// возвращается к нему
+	Snapshot string `json:"snapshot,omitempty"`
+	LoadBase string `json:"load_base,omitempty"`
+	// Native — Claude Code сам следит за файлом и покажет агенту ближайшую
+	// правку заметкой «changed on disk»: хук ждёт её, а не пишет второй раз
+	Native bool `json:"native,omitempty"`
+	// Deferred — хеш текста, правку к которому хук оставил Claude Code, и
+	// место транскрипта в тот момент. Нет заметки после ответа модели —
+	// Claude Code правку пропустил, и её доносит хук
+	Deferred   string `json:"deferred,omitempty"`
+	DeferredAt int64  `json:"deferred_at,omitempty"`
+}
+
+// Виды отслеживаемых файлов
+const (
+	kindSkill  = "skill"
+	kindMemory = "memory"
+)
+
+// stateSchema — версия записи. Запись прежнего вида (только хеши скиллов)
+// перечитывается с начала транскрипта: тексты в контексте берутся из снимков
+const stateSchema = 2
+
+// sessionState — что хук знает о сессии (или субагенте): докуда прочитан
+// транскрипт и какие файлы у агента в контексте, по пути файла
+type sessionState struct {
+	Schema     int                 `json:"schema"`
+	Transcript string              `json:"transcript"`
+	Offset     int64               `json:"offset"`
+	Files      map[string]*watched `json:"files"`
+	// LastAssistant — место последнего ответа модели в транскрипте: после
+	// него Claude Code уже показал бы свою заметку
+	LastAssistant int64 `json:"last_assistant,omitempty"`
+	// CompactAt — время последнего сжатия: список инструкций сразу после
+	// него Claude Code не отслеживает
+	CompactAt time.Time `json:"compact_at,omitempty"`
+	// Announced — хеши SKILL.md, о которых напомнил хук схемы 1, по
+	// каталогу скилла: та правка уже объявлена, второй раз её не показывать
+	Announced map[string]string `json:"announced,omitempty"`
+	// Skills — записи прежней версии, читаются только при переходе
+	Skills map[string]schema1Skill `json:"skills,omitempty"`
+}
+
+// schema1Skill — запись скилла в схеме 1
+type schema1Skill struct {
 	Notified string `json:"notified,omitempty"`
 }
 
-// sessionState — что хук знает о сессии (или субагенте): докуда прочитан
-// транскрипт и какие скиллы в нём вызваны, по каталогу скилла
-type sessionState struct {
-	Transcript string              `json:"transcript"`
-	Offset     int64               `json:"offset"`
-	Skills     map[string]*watched `json:"skills"`
+// newSessionState — пустая запись
+func newSessionState() sessionState {
+	return sessionState{Schema: stateSchema, Files: map[string]*watched{}}
 }
 
 // stateTTL — сколько хранить запись сессии без событий. Сессии живут днями
@@ -117,21 +163,41 @@ func openState(dir, name string) (*lockedState, error) {
 	locked := &lockedState{file: file}
 	if len(data) == 0 {
 		locked.Fresh = true
-		locked.State.Skills = map[string]*watched{}
+		locked.State = newSessionState()
 		return locked, nil
 	}
 	if err := json.Unmarshal(data, &locked.State); err != nil {
 		// Явный failover: сессия читается заново с начала транскрипта, как
 		// встреченная впервые; сбой уходит в лог через Recovered
 		locked.Fresh = true
-		locked.State = sessionState{Skills: map[string]*watched{}}
+		locked.State = newSessionState()
 		locked.Recovered = fmt.Errorf("state %s unreadable, rescanning transcript: %w", path, err)
 		return locked, nil
 	}
-	if locked.State.Skills == nil {
-		locked.State.Skills = map[string]*watched{}
+	if locked.State.Schema != stateSchema {
+		locked.State = migrate(locked.State)
+	}
+	if locked.State.Files == nil {
+		locked.State.Files = map[string]*watched{}
 	}
 	return locked, nil
+}
+
+// migrate переводит запись прежней версии: транскрипт читается заново с
+// начала, а правки, о которых прежняя версия уже напомнила, запоминаются,
+// чтобы не объявить их второй раз
+func migrate(old sessionState) sessionState {
+	state := newSessionState()
+	for dir, skill := range old.Skills {
+		if skill.Notified == "" {
+			continue
+		}
+		if state.Announced == nil {
+			state.Announced = map[string]string{}
+		}
+		state.Announced[filepath.Join(dir, skillFileName)] = skill.Notified
+	}
+	return state
 }
 
 // lockFile ждёт блокировку не дольше lockWait
@@ -186,17 +252,27 @@ func readStateUnlocked(dir, name string) (sessionState, error) {
 	if err := json.Unmarshal(data, &state); err != nil {
 		return sessionState{}, fmt.Errorf("cannot decode state %s: %w", name, err)
 	}
+	if state.Schema != stateSchema {
+		return sessionState{}, fmt.Errorf("state %s has schema %d, want %d", name, state.Schema, stateSchema)
+	}
 	return state, nil
 }
 
-// cleanupStale удаляет записи сессий, не видевших событий дольше stateTTL
+// cleanupStale удаляет файлы каталога (записи сессий, тексты), не тронутые
+// дольше stateTTL
 func cleanupStale(dir string, now time.Time) error {
 	entries, err := os.ReadDir(dir)
+	if errors.Is(err, fs.ErrNotExist) {
+		return nil
+	}
 	if err != nil {
 		return fmt.Errorf("cannot list state dir: %w", err)
 	}
 	var errs []error
 	for _, entry := range entries {
+		if entry.IsDir() {
+			continue
+		}
 		info, err := entry.Info()
 		if errors.Is(err, fs.ErrNotExist) {
 			continue
