@@ -137,3 +137,90 @@ func sectionAt(lines []string, headings []int, line int) string {
 	}
 	return section
 }
+
+// sectionsLimit — изменённые разделы целиком кладутся в контекст, если
+// вместе укладываются в этот размер; больше — просьба перечитать
+const sectionsLimit = 8192
+
+// preambleTitle — имя текста до первого заголовка
+const preambleTitle = "начало файла, до первого заголовка"
+
+// section — раздел текста: заголовок и строки до следующего заголовка
+type section struct {
+	Title string
+	Text  string
+}
+
+// splitSections делит текст на разделы по тем же заголовкам, что и в
+// перечне правки. Текст до первого заголовка — раздел preambleTitle
+func splitSections(text string) []section {
+	lines := splitLines(text)
+	headings := headingIndex(lines)
+	var sections []section
+	start, title := 0, preambleTitle
+	for _, h := range headings {
+		if h > start || (h == start && h > 0) {
+			sections = append(sections, section{Title: title, Text: strings.TrimRight(strings.Join(lines[start:h], "\n"), " \t\n")})
+		}
+		start, title = h, headingText(lines[h])
+	}
+	if start < len(lines) {
+		sections = append(sections, section{Title: title, Text: strings.TrimRight(strings.Join(lines[start:], "\n"), " \t\n")})
+	}
+	return sections
+}
+
+// changedSections — разделы нового текста, которых в старом нет в том же
+// виде, и названия разделов старого текста, исчезнувших из нового. Разделы с
+// одинаковым заголовком сопоставляются по порядку
+func changedSections(oldText, newText string) (changed []section, removed []string) {
+	oldSections := splitSections(oldText)
+	oldByTitle := map[string][]string{}
+	for _, s := range oldSections {
+		oldByTitle[s.Title] = append(oldByTitle[s.Title], s.Text)
+	}
+	newCount := map[string]int{}
+	for _, s := range splitSections(newText) {
+		k := newCount[s.Title]
+		newCount[s.Title]++
+		olds := oldByTitle[s.Title]
+		if k < len(olds) && strings.TrimSpace(olds[k]) == strings.TrimSpace(s.Text) {
+			continue
+		}
+		if k >= len(olds) && strings.TrimSpace(s.Text) == "" {
+			continue
+		}
+		changed = append(changed, s)
+	}
+	seen := map[string]int{}
+	for _, s := range oldSections {
+		seen[s.Title]++
+		if seen[s.Title] > newCount[s.Title] && strings.TrimSpace(s.Text) != "" {
+			removed = append(removed, s.Title)
+		}
+	}
+	return changed, removed
+}
+
+// sectionsSize — размер разделов целиком в выдаче
+func sectionsSize(sections []section) int {
+	size := 0
+	for _, s := range sections {
+		size += len(s.Text)
+	}
+	return size
+}
+
+// fence — ограда блока кода длиннее любой последовательности ` в тексте
+func fence(text string) string {
+	longest, run := 0, 0
+	for _, r := range text {
+		if r == '`' {
+			run++
+			longest = max(longest, run)
+			continue
+		}
+		run = 0
+	}
+	return strings.Repeat("`", max(3, longest+1))
+}

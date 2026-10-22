@@ -86,6 +86,8 @@ func WritePreview(w io.Writer, r *PreviewResult) {
 			switch {
 			case n.Lost:
 				form = "текст потерян"
+			case n.Diff == "" && len(n.Full)+len(n.Dropped) > 0:
+				form = fmt.Sprintf("разделы целиком: %d, удалено %d, diff %d Б", len(n.Full), len(n.Dropped), n.DiffBytes)
 			case n.Diff == "":
 				form = fmt.Sprintf("перечитать, diff %d Б", n.DiffBytes)
 			}

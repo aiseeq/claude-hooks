@@ -408,8 +408,8 @@ func output(cmd *exec.Cmd) ([]byte, error) {
 
 // dryRunCounts — выдачи одного вида
 type dryRunCounts struct {
-	total, diffs, large, lost int
-	maxDiff, maxLarge         int
+	total, diffs, full, large, lost int
+	maxDiff, maxFull, maxLarge      int
 }
 
 func (c *dryRunCounts) add(n *Notice) {
@@ -420,6 +420,9 @@ func (c *dryRunCounts) add(n *Notice) {
 	case n.Diff != "":
 		c.diffs++
 		c.maxDiff = max(c.maxDiff, n.DiffBytes)
+	case len(n.Full)+len(n.Dropped) > 0:
+		c.full++
+		c.maxFull = max(c.maxFull, len(n.format()))
 	default:
 		c.large++
 		c.maxLarge = max(c.maxLarge, n.DiffBytes)
@@ -441,12 +444,12 @@ func WriteDryRun(w io.Writer, r *DryRunResult) {
 		byFile[n.Notice.label()]++
 		byTranscript[n.Transcript]++
 	}
-	fmt.Fprintf(w, "Выдач: %d в %d транскриптах — diff %d (до %d Б), «перечитай» при правке больше %d Б: %d (до %d Б), текст в контексте потерян: %d\n",
-		total.total, len(byTranscript), total.diffs, total.maxDiff, diffLimit, total.large, total.maxLarge, total.lost)
+	fmt.Fprintf(w, "Выдач: %d в %d транскриптах — diff %d (до %d Б), разделы целиком %d (выдача до %d Б), «перечитай» при разделах больше %d Б: %d (diff до %d Б), текст в контексте потерян: %d\n",
+		total.total, len(byTranscript), total.diffs, total.maxDiff, total.full, total.maxFull, sectionsLimit, total.large, total.maxLarge, total.lost)
 	for _, kind := range []string{kindSkill, kindMemory} {
 		c := byKind[kind]
-		fmt.Fprintf(w, "  %-7s выдач %d: diff %d (до %d Б), «перечитай» %d (до %d Б), потерян %d\n",
-			kind, c.total, c.diffs, c.maxDiff, c.large, c.maxLarge, c.lost)
+		fmt.Fprintf(w, "  %-7s выдач %d: diff %d (до %d Б), разделы %d (до %d Б), «перечитай» %d (до %d Б), потерян %d\n",
+			kind, c.total, c.diffs, c.maxDiff, c.full, c.maxFull, c.large, c.maxLarge, c.lost)
 	}
 	fmt.Fprintf(w, "Правок, оставленных Claude Code и показанных его заметкой: %d; выдач хука, задублированных заметкой Claude Code: %d\n",
 		r.HandedToClaude, r.Duplicates)

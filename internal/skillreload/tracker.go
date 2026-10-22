@@ -20,6 +20,11 @@ type Notice struct {
 	// DiffBytes — размер всей правки; Sections — её разделы
 	DiffBytes int
 	Sections  []string
+	// Full — правка больше diffLimit: изменённые разделы целиком, если вместе
+	// уложились в sectionsLimit
+	Full []section
+	// Dropped — заголовки разделов, что есть в тексте у агента, но не в файле
+	Dropped []string
 	// Lost — текст, бывший у агента, не сохранился: правку не посчитать
 	Lost bool
 }
@@ -262,6 +267,12 @@ func (t tracker) check(w *watched, now time.Time) (Notice, bool, error) {
 		notice.Sections = sections
 		if len(diff) <= diffLimit {
 			notice.Diff = diff
+			break
+		}
+		changed, removed := changedSections(old, view.Text)
+		if len(changed)+len(removed) > 0 && sectionsSize(changed) <= sectionsLimit {
+			notice.Full = changed
+			notice.Dropped = removed
 		}
 	}
 	base, err := t.store.put(view.Text)

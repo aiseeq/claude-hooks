@@ -230,18 +230,55 @@ func TestBaseSurvivesHookRestart(t *testing.T) {
 	wantDiff(t, f.check(Event{}), []string{"-Б.", "+В."}, []string{"А."})
 }
 
-func TestLargeEditFallsBackToReload(t *testing.T) {
+func TestLargeEditGivesChangedSectionsInFull(t *testing.T) {
+	f := newFixture(t)
+	base := time.Now().Add(-time.Hour)
+	text := "Вступление.\n\n# Шаги\nкоротко.\n\n# Лишнее\nуберём.\n\n# Итог\nготово."
+	f.writeSkill(text, base)
+	f.load(text, base.Add(time.Minute))
+	f.check(Event{})
+
+	long := strings.TrimSpace(strings.Repeat("длинное правило ```код``` ", 150))
+	f.writeSkill("Вступление.\n\n# Шаги\n"+long+"\n\n# Итог\nготово.", base.Add(5*time.Minute))
+	got := f.check(Event{})
+	if len(got) != 1 || got[0].Diff != "" || got[0].DiffBytes <= diffLimit {
+		t.Fatalf("правка больше %d Б: ждали выдачу без diff, получили %+v", diffLimit, got)
+	}
+	n := got[0]
+	if len(n.Full) != 1 || n.Full[0].Title != "Шаги" || !strings.Contains(n.Full[0].Text, long) {
+		t.Fatalf("ждали раздел «Шаги» целиком, получили %+v", n.Full)
+	}
+	if strings.Join(n.Dropped, ",") != "Лишнее" {
+		t.Errorf("удалённые разделы %v, ждали [Лишнее]", n.Dropped)
+	}
+	out := Format(got)
+	for _, want := range []string{"разделы целиком", "Раздел «Шаги»:\n````markdown\n# Шаги\n" + long + "\n````", "Раздел «Лишнее» удалён.", "перечитывать не нужно"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("в выдаче нет %q:\n%s", want, out)
+		}
+	}
+	for _, unwanted := range []string{"готово.", "Вступление.", "Вызови Skill"} {
+		if strings.Contains(out, unwanted) {
+			t.Errorf("в выдаче лишнее %q: неизменённый раздел или просьба вызвать заново", unwanted)
+		}
+	}
+	if got := f.check(Event{}); len(got) != 0 {
+		t.Fatalf("о большой правке сказали повторно: %d", len(got))
+	}
+}
+
+func TestHugeEditFallsBackToReload(t *testing.T) {
 	f := newFixture(t)
 	base := time.Now().Add(-time.Hour)
 	f.writeSkill("# Шаги\nкоротко.\n# Итог\nготово.", base)
 	f.load("# Шаги\nкоротко.\n# Итог\nготово.", base.Add(time.Minute))
 	f.check(Event{})
 
-	long := strings.Repeat("длинное правило ", 200)
+	long := strings.Repeat("длинное правило ", 600)
 	f.writeSkill("# Шаги\n"+long+"\n# Итог\nготово.", base.Add(5*time.Minute))
 	got := f.check(Event{})
-	if len(got) != 1 || got[0].Diff != "" || got[0].DiffBytes <= diffLimit {
-		t.Fatalf("правка больше %d Б: ждали выдачу без diff, получили %+v", diffLimit, got)
+	if len(got) != 1 || got[0].Diff != "" || len(got[0].Full) != 0 {
+		t.Fatalf("разделы больше %d Б: ждали просьбу вызвать заново, получили %+v", sectionsLimit, got)
 	}
 	if strings.Join(got[0].Sections, ",") != "Шаги" {
 		t.Errorf("изменённые разделы %v, ждали [Шаги]", got[0].Sections)
@@ -252,9 +289,19 @@ func TestLargeEditFallsBackToReload(t *testing.T) {
 			t.Errorf("в выдаче нет %q: %s", want, text)
 		}
 	}
-	if got := f.check(Event{}); len(got) != 0 {
-		t.Fatalf("о большой правке сказали повторно: %d", len(got))
-	}
+}
+
+func TestEditsBetweenEventsGiveOneCumulativeDiff(t *testing.T) {
+	f := newFixture(t)
+	base := time.Now().Add(-time.Hour)
+	f.writeSkill("Шаг 1.\nХвост 1.", base)
+	f.load("Шаг 1.\nХвост 1.", base.Add(time.Minute))
+	f.check(Event{})
+
+	// Две правки подряд без события хука между ними
+	f.writeSkill("Шаг 2.\nХвост 1.", base.Add(5*time.Minute))
+	f.writeSkill("Шаг 3.\nХвост 3.", base.Add(6*time.Minute))
+	wantDiff(t, f.check(Event{}), []string{"-Шаг 1.", "-Хвост 1.", "+Шаг 3.", "+Хвост 3."}, []string{"Шаг 2."})
 }
 
 func TestTouchWithoutEditIsSilent(t *testing.T) {
@@ -719,5 +766,27 @@ func TestDryRunReplaysHook(t *testing.T) {
 	}
 	if len(result.RenderMismatch) != 1 || !result.RenderMismatch[0].Stale {
 		t.Fatalf("загрузка прежнего текста не опознана: %+v", result.RenderMismatch)
+	}
+}
+
+func TestChangedSections(t *testing.T) {
+	old := "Шапка.\n\n## Пример\nА\n\n## Пример\nБ\n\n## Код\n```\n# не заголовок\n```\n\n## Старый\nтекст"
+	updated := "Шапка, правка.\n\n## Пример\nА\n\n## Пример\nБ2\n\n## Код\n```\n# не заголовок\n```\n\n## Новый\nтекст"
+	changed, removed := changedSections(old, updated)
+	var titles []string
+	for _, s := range changed {
+		titles = append(titles, s.Title)
+	}
+	if strings.Join(titles, "|") != preambleTitle+"|Пример|Новый" {
+		t.Errorf("изменённые разделы %q", titles)
+	}
+	if len(changed) == 3 && changed[1].Text != "## Пример\nБ2" {
+		t.Errorf("второй «Пример» целиком: %q", changed[1].Text)
+	}
+	if strings.Join(removed, "|") != "Старый" {
+		t.Errorf("удалённые разделы %q", removed)
+	}
+	if got := fence("a ```` b"); got != "`````" {
+		t.Errorf("ограда для текста с ````: %q", got)
 	}
 }

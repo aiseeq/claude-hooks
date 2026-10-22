@@ -208,6 +208,8 @@ func (n *Notice) format() string {
 	switch {
 	case n.Lost:
 		return subject + ": текст, бывший у тебя в контексте, не сохранился, правку не посчитать. " + reload
+	case n.Diff == "" && len(n.Full)+len(n.Dropped) > 0:
+		return n.formatSections(subject)
 	case n.Diff == "":
 		sections := "разделы не определены"
 		if len(n.Sections) > 0 {
@@ -216,6 +218,22 @@ func (n *Notice) format() string {
 		return fmt.Sprintf("%s: правка большая (diff %.1f КБ), %s. %s", subject, float64(n.DiffBytes)/1024, sections, reload)
 	}
 	return subject + ". Ниже правка от текста у тебя в контексте; действует сразу, перечитывать не нужно.\n```diff\n" + n.Diff + "```"
+}
+
+// formatSections — большая правка разделами целиком: каждый изменённый
+// раздел в том виде, в каком он сейчас на диске, удалённый — строкой
+func (n *Notice) formatSections(subject string) string {
+	var out strings.Builder
+	fmt.Fprintf(&out, "%s. Правка большая (diff %.1f КБ), поэтому ниже изменённые разделы целиком, как они сейчас на диске; они заменяют прежний текст этих разделов у тебя в контексте, остальное не менялось, перечитывать не нужно.",
+		subject, float64(n.DiffBytes)/1024)
+	for _, s := range n.Full {
+		f := fence(s.Text)
+		fmt.Fprintf(&out, "\n\nРаздел «%s»:\n%smarkdown\n%s\n%s", s.Title, f, s.Text, f)
+	}
+	for _, title := range n.Dropped {
+		fmt.Fprintf(&out, "\n\nРаздел «%s» удалён.", title)
+	}
+	return out.String()
 }
 
 // localTime — время в поясе машины с его именем
