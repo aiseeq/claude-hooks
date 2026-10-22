@@ -27,6 +27,14 @@ tools:
   skill_reload:
     enabled: true
 
+  # Проверка вопросов пользователю в конце хода (Stop, подкоманда question-check):
+  # судья-модель останавливает конец хода, если вопрос лишний — ответ в журналах
+  # реплик и решений или в зоне агента. Только сессии lead и work-admin, до 30.10
+  # включительно; журнал — ~/.local/state/claude-hooks/question-check.jsonl.
+  # Включает регистрация подкоманды в settings.json; без ключа включено
+  question_check:
+    enabled: true
+
   # Блокирует явный выбор модели, отсутствующей в ~/.config/models/approved
   model_guard:
     enabled: false

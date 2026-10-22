@@ -55,6 +55,11 @@ type ToolInput struct {
 	// (реестр задач недоступен), пустой список — что ждать нечего
 	BackgroundTasks *[]BackgroundTask `json:"background_tasks,omitempty"`
 	SessionCrons    *[]SessionCron    `json:"session_crons,omitempty"`
+
+	// StopHookActive и LastAssistantMessage приходят в Stop: ход продолжается
+	// после остановки Stop-хуком, и текст последнего сообщения ассистента
+	StopHookActive       bool   `json:"stop_hook_active,omitempty"`
+	LastAssistantMessage string `json:"last_assistant_message,omitempty"`
 }
 
 // BackgroundTask незавершённая фоновая задача сессии: субагент, фоновая

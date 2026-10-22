@@ -30,3 +30,7 @@ categories:
             pattern: "cobra.Command"
             reason: >-
               Подкоманда skill-scan — та же таблица подкоманд CLI, что в main.go.
+          - file: "cmd/claude-hooks/questioncheck.go"
+            pattern: "cobra.Command"
+            reason: >-
+              Подкоманда question-bench — та же таблица подкоманд CLI, что в main.go.
