@@ -64,7 +64,7 @@ func (t *WriteGuardTool) ValidateTool(_ context.Context, input *core.ToolInput) 
 	}
 	script := &shScript{}
 	parseShell(cmd, false, script)
-	whole := utf16Len(cmd) > claudeSplitLimit
+	whole := core.UTF16Len(cmd) > claudeSplitLimit
 	vars := t.rm.trackVars(script, input.CWD)
 	var hits []string
 	for _, b := range script.bodies {
@@ -145,16 +145,4 @@ func pieceWords(piece string) []shWord {
 		words = append(words, w)
 	}
 	return words
-}
-
-// utf16Len длина строки в единицах UTF-16
-func utf16Len(s string) int {
-	n := 0
-	for _, r := range s {
-		n++
-		if r > 0xFFFF {
-			n++
-		}
-	}
-	return n
 }

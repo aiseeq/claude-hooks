@@ -8,6 +8,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"time"
 )
@@ -166,4 +167,34 @@ func pluginName(dir string) string {
 		}
 	}
 	return ""
+}
+
+// placeholderRe — подстановки Claude Code в тексте скилла (2.1.308, nBe):
+// экранированный \$, $ARGUMENTS[N], $ARGUMENTS, $N и именованный аргумент
+var placeholderRe = regexp.MustCompile(`\\\$|\$ARGUMENTS\[\d+\]|\$ARGUMENTS|\$\d+|\$[A-Za-z_][A-Za-z0-9_]*`)
+
+// matchesRendered — снимок получен из текста файла подстановкой аргументов
+// вызова: на месте подстановок в снимке может стоять что угодно. Аргументов
+// вызова хук не знает, поэтому сверяет текст файла как шаблон
+func matchesRendered(fileText, snapshot string) bool {
+	if !placeholderRe.MatchString(fileText) {
+		return false
+	}
+	var pattern strings.Builder
+	pattern.WriteString(`\A`)
+	last := 0
+	for _, loc := range placeholderRe.FindAllStringIndex(fileText, -1) {
+		pattern.WriteString(regexp.QuoteMeta(fileText[last:loc[0]]))
+		if fileText[loc[0]:loc[1]] == `\$` {
+			// Claude Code убирает обратную косую черту, $ остаётся буквой
+			pattern.WriteString(regexp.QuoteMeta("$"))
+		} else {
+			pattern.WriteString(`(?s:.*?)`)
+		}
+		last = loc[1]
+	}
+	pattern.WriteString(regexp.QuoteMeta(fileText[last:]))
+	pattern.WriteString(`\z`)
+	re, err := regexp.Compile(pattern.String())
+	return err == nil && re.MatchString(snapshot)
 }

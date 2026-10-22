@@ -5,7 +5,10 @@ import (
 	"fmt"
 	"path/filepath"
 	"sort"
+	"strings"
 	"time"
+
+	"github.com/aiseeq/claude-hooks/internal/core"
 )
 
 // Notice — правка файла, которую агент ещё не видел
@@ -27,6 +30,9 @@ type Notice struct {
 	Dropped []string
 	// Lost — текст, бывший у агента, не сохранился: правку не посчитать
 	Lost bool
+	// Overflow — правка не поместилась в выдачу события: перечнем разделов,
+	// база не сдвинута, правка придёт следующей выдачей
+	Overflow bool
 }
 
 // compactWindow — список инструкций, приложенный не позже этого после
@@ -70,15 +76,20 @@ func (t tracker) apply(ev transcriptEvent) error {
 func (t tracker) loadSkill(ev transcriptEvent) error {
 	snapshot := textHash(ev.Text)
 	w := t.state.Files[ev.Path]
-	if ev.Kind == evSkillReinject && w != nil && w.Snapshot == snapshot {
+	if ev.Kind == evSkillReinject && w != nil && (w.Snapshot == snapshot || truncatedCopy(ev.Text)) {
+		// Урезанная сжатием копия — тот же вызов: дочитать его Claude Code
+		// предлагает агенту сам
 		w.Base = w.LoadBase
+		return nil
+	}
+	if ev.Kind == evSkillReinject && truncatedCopy(ev.Text) {
 		return nil
 	}
 	view, err := t.view(kindSkill, ev.Path)
 	if err != nil {
 		return err
 	}
-	base, err := t.chooseBase(ev)
+	base, err := t.skillBase(ev, view)
 	if err != nil {
 		return err
 	}
@@ -133,6 +144,22 @@ func (t tracker) loadMemory(ev transcriptEvent) error {
 // подстановки — 0): агент тогда работает по старому тексту
 func (t tracker) chooseBase(ev transcriptEvent) (string, error) {
 	return t.store.put(ev.Text)
+}
+
+// skillBase — текст скилла у агента после вызова. Снимок, полученный из
+// файла подстановкой аргументов вызова, — это файл: базой берётся его текст,
+// иначе каждый вызов с аргументами давал бы ложную правку (сессия лида 22.10
+// 18:59, $1 в web-page)
+func (t tracker) skillBase(ev transcriptEvent, view fileView) (string, error) {
+	if view.Exists && (view.Text == ev.Text || matchesRendered(view.Text, ev.Text)) {
+		return t.store.put(view.Text)
+	}
+	return t.chooseBase(ev)
+}
+
+// truncatedCopy — копия скилла, урезанная сжатием
+func truncatedCopy(text string) bool {
+	return strings.HasSuffix(strings.TrimSpace(text), truncatedMarker)
 }
 
 // staleLoad — в контекст попала прежняя версия: файл изменён до загрузки,
@@ -202,53 +229,153 @@ func (t tracker) known(ev transcriptEvent) error {
 	return nil
 }
 
+// candidate — правка, ещё не выданная: база сдвигается, только когда правка
+// попала в выдачу
+type candidate struct {
+	w      *watched
+	notice Notice
+	base   string
+}
+
 // notices сверяет файлы с текстом в контексте и собирает правки, которых
-// агент не видел. Показанная правка становится базой: одна правка — одна
-// выдача. Правку файла, за которым следит Claude Code, хук откладывает до
-// ответа модели и показывает сам, только если заметки так и не было
+// агент не видел, в пределах outputBudget. Показанная правка становится
+// базой: одна правка — одна выдача. Правку файла, за которым следит Claude
+// Code, хук откладывает до ответа модели и показывает сам, только если
+// заметки так и не было
 func (t tracker) notices(now time.Time) ([]Notice, []error) {
-	var notices []Notice
+	candidates, errs := t.candidates(now)
+	return t.deliver(candidates, now), errs
+}
+
+// candidates — правки всех файлов сессии до укладки в выдачу
+func (t tracker) candidates(now time.Time) ([]candidate, []error) {
+	var candidates []candidate
 	var errs []error
 	for _, path := range sortedKeys(t.state.Files) {
 		w := t.state.Files[path]
-		notice, ok, err := t.check(w, now)
+		c, ok, err := t.check(w, now)
 		if err != nil {
 			errs = append(errs, fmt.Errorf("%s not checked: %w", w.Name, err))
 		}
 		if ok {
-			notices = append(notices, notice)
+			candidates = append(candidates, c)
 		}
 	}
-	sort.SliceStable(notices, func(i, j int) bool { return notices[i].Name < notices[j].Name })
-	return notices, errs
+	return candidates, errs
 }
 
-func (t tracker) check(w *watched, now time.Time) (Notice, bool, error) {
+// deliver укладывает правки в выдачу и сдвигает базу показанных целиком
+func (t tracker) deliver(candidates []candidate, now time.Time) []Notice {
+	notices := fitBudget(candidates, outputBudget)
+	for i := range candidates {
+		c := &candidates[i]
+		if !c.notice.Overflow {
+			c.w.Base = c.base
+			c.w.Deferred = ""
+			c.w.LoadedAt = now
+		}
+	}
+	return notices
+}
+
+// rawSize — размер выдачи всех правок целиком, без укладки в бюджет
+func rawSize(candidates []candidate) int {
+	parts := make([]Notice, 0, len(candidates))
+	for i := range candidates {
+		parts = append(parts, candidates[i].notice)
+	}
+	return core.UTF16Len(Format(parts))
+}
+
+// fitBudget укладывает правки в выдачу не больше budget символов: меньшие
+// целиком, пока остаётся место под перечень остальных, остальные — перечнем
+// разделов с пометкой Overflow. Правка, которая и одна больше бюджета, —
+// просьба перечитать, как правка больше sectionsLimit
+func fitBudget(candidates []candidate, budget int) []Notice {
+	sep := len(noticeSeparator)
+	full := make([]int, len(candidates))
+	short := make([]int, len(candidates))
+	reserve := 0
+	for i := range candidates {
+		n := &candidates[i].notice
+		full[i] = core.UTF16Len(n.format()) + sep
+		if full[i] > budget {
+			n.Diff, n.Full, n.Dropped = "", nil, nil
+			full[i] = core.UTF16Len(n.format()) + sep
+		}
+		overflow := *n
+		overflow.Overflow = true
+		short[i] = core.UTF16Len(overflow.format()) + sep
+		reserve += short[i]
+	}
+	order := make([]int, len(candidates))
+	for i := range order {
+		order[i] = i
+	}
+	sort.SliceStable(order, func(a, b int) bool { return full[order[a]] < full[order[b]] })
+
+	used := 0
+	shown := make([]bool, len(candidates))
+	for _, i := range order {
+		if used+full[i]+reserve-short[i] <= budget {
+			used += full[i]
+			reserve -= short[i]
+			shown[i] = true
+		}
+	}
+	for _, i := range order {
+		if shown[i] {
+			continue
+		}
+		candidates[i].notice.Overflow = true
+		if used+short[i] <= budget {
+			used += short[i]
+			shown[i] = true
+		}
+	}
+	var notices []Notice
+	for i := range candidates {
+		if shown[i] {
+			notices = append(notices, candidates[i].notice)
+		}
+	}
+	sort.SliceStable(notices, func(i, j int) bool {
+		if notices[i].Overflow != notices[j].Overflow {
+			return !notices[i].Overflow
+		}
+		return notices[i].Name < notices[j].Name
+	})
+	return notices
+}
+
+// check сверяет файл с текстом в контексте; правка возвращается кандидатом,
+// база не трогается
+func (t tracker) check(w *watched, now time.Time) (candidate, bool, error) {
 	view, err := t.view(w.Kind, w.Path)
 	if err != nil || !view.Exists {
-		return Notice{}, false, err
+		return candidate{}, false, err
 	}
 	current := textHash(view.Text)
 	if current == w.Base {
 		w.Deferred = ""
-		return Notice{}, false, nil
+		return candidate{}, false, nil
 	}
 	if t.announcedBySchema1(w, view) {
 		base, err := t.store.put(view.Text)
 		w.Base = base
-		return Notice{}, false, err
+		return candidate{}, false, err
 	}
 	if w.Native {
 		if w.Deferred == "" || t.state.LastAssistant < w.DeferredAt {
 			if w.Deferred == "" {
 				deferred, err := t.store.put(view.Text)
 				if err != nil {
-					return Notice{}, false, err
+					return candidate{}, false, err
 				}
 				w.Deferred = deferred
 				w.DeferredAt = t.state.Offset
 			}
-			return Notice{}, false, nil
+			return candidate{}, false, nil
 		}
 		// Модель ответила, а заметки Claude Code не было
 		w.Native = false
@@ -260,7 +387,7 @@ func (t tracker) check(w *watched, now time.Time) (Notice, bool, error) {
 	case errors.Is(err, errTextLost):
 		notice.Lost = true
 	case err != nil:
-		return Notice{}, false, err
+		return candidate{}, false, err
 	default:
 		diff, sections := lineDiff(old, view.Text, notice.label())
 		notice.DiffBytes = len(diff)
@@ -277,12 +404,9 @@ func (t tracker) check(w *watched, now time.Time) (Notice, bool, error) {
 	}
 	base, err := t.store.put(view.Text)
 	if err != nil {
-		return Notice{}, false, err
+		return candidate{}, false, err
 	}
-	w.Base = base
-	w.Deferred = ""
-	w.LoadedAt = now
-	return notice, true, nil
+	return candidate{w: w, notice: notice, base: base}, true, nil
 }
 
 // announcedBySchema1 — эту правку уже объявила хук схемы 1 («вызови

@@ -15,6 +15,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/aiseeq/claude-hooks/internal/core"
 )
 
 // Сухой прогон: по транскриптам за последние дни проиграть хук и посчитать,
@@ -35,6 +37,10 @@ type DryRunResult struct {
 	// HandedToClaude — правки, которые хук оставил Claude Code, и тот их
 	// показал заметкой
 	HandedToClaude int
+	// Events — событий хука с выдачей; OverLimit — из них таких, где все
+	// правки целиком больше outputLimit (без укладки ушли бы в файл);
+	// MaxRaw — самая большая выдача без укладки, MaxOutput — с ней, в символах
+	Events, OverLimit, MaxRaw, MaxOutput int
 	// Duplicates — выдачи хука, после которых до следующего события пришла
 	// и заметка Claude Code о том же файле
 	Duplicates int
@@ -145,10 +151,20 @@ func replay(scan transcriptScan, timelines map[string][]version, since time.Time
 		switch ev.Kind {
 		case evHook:
 			announced = map[string]bool{}
-			notices, errs := t.notices(ev.At)
+			candidates, errs := t.candidates(ev.At)
 			result.Problems = append(result.Problems, errs...)
+			raw := rawSize(candidates)
+			notices := t.deliver(candidates, ev.At)
 			if ev.At.Before(since) {
 				continue
+			}
+			if len(notices) > 0 {
+				result.Events++
+				result.MaxRaw = max(result.MaxRaw, raw)
+				if raw > outputLimit {
+					result.OverLimit++
+				}
+				result.MaxOutput = max(result.MaxOutput, core.UTF16Len(Format(notices)))
 			}
 			for i := range notices {
 				announced[notices[i].Path] = true
@@ -195,7 +211,7 @@ func checkRender(ev transcriptEvent, timeline []version, result *DryRunResult) e
 	if err != nil {
 		return fmt.Errorf("render check %s: %w", ev.Path, err)
 	}
-	if !v.Exists || v.ModTime.After(ev.At) || v.Text == text {
+	if !v.Exists || v.ModTime.After(ev.At) || v.Text == text || (kind == kindSkill && matchesRendered(v.Text, text)) {
 		return nil
 	}
 	stale := false
@@ -408,13 +424,15 @@ func output(cmd *exec.Cmd) ([]byte, error) {
 
 // dryRunCounts — выдачи одного вида
 type dryRunCounts struct {
-	total, diffs, full, large, lost int
-	maxDiff, maxFull, maxLarge      int
+	total, diffs, full, large, lost, overflow int
+	maxDiff, maxFull, maxLarge                int
 }
 
 func (c *dryRunCounts) add(n *Notice) {
 	c.total++
 	switch {
+	case n.Overflow:
+		c.overflow++
 	case n.Lost:
 		c.lost++
 	case n.Diff != "":
@@ -451,6 +469,8 @@ func WriteDryRun(w io.Writer, r *DryRunResult) {
 		fmt.Fprintf(w, "  %-7s выдач %d: diff %d (до %d Б), разделы %d (до %d Б), «перечитай» %d (до %d Б), потерян %d\n",
 			kind, c.total, c.diffs, c.maxDiff, c.full, c.maxFull, c.large, c.maxLarge, c.lost)
 	}
+	fmt.Fprintf(w, "Событий с выдачей: %d; больше лимита Claude Code %d символов без укладки: %d (самая большая %d), после укладки в %d: самая большая %d, перечнем «не поместилась»: %d\n",
+		r.Events, outputLimit, r.OverLimit, r.MaxRaw, outputBudget, r.MaxOutput, total.overflow)
 	fmt.Fprintf(w, "Правок, оставленных Claude Code и показанных его заметкой: %d; выдач хука, задублированных заметкой Claude Code: %d\n",
 		r.HandedToClaude, r.Duplicates)
 	fmt.Fprintln(w, "По файлам:")

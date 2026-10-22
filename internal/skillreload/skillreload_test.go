@@ -3,12 +3,15 @@ package skillreload
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/aiseeq/claude-hooks/internal/core"
 )
 
 // fixture — скилл, файл инструкций и транскрипт сессии во временном каталоге
@@ -788,5 +791,149 @@ func TestChangedSections(t *testing.T) {
 	}
 	if got := fence("a ```` b"); got != "`````" {
 		t.Errorf("ограда для текста с ````: %q", got)
+	}
+}
+
+// reinvocationLine — пометка Claude Code перед повторным вызовом скилла
+func reinvocationLine(t *testing.T, at time.Time) string {
+	t.Helper()
+	return jsonLine(t, map[string]any{
+		"type": "user", "isMeta": true, "timestamp": stamp(at),
+		"message": map[string]any{"role": "user", "content": "(Re-invocation of /demo — the skill instructions were previously loaded; the arguments or dynamic output below are new.)"},
+	})
+}
+
+func TestReinvocationWithArgumentsIsNotAnEdit(t *testing.T) {
+	// Сессия лида 22.10 18:59: web-page вызван заново с аргументами, Claude
+	// Code подставил второе слово аргументов вместо $1; файл старше вызова
+	f := newFixture(t)
+	base := time.Now().Add(-time.Hour)
+	body := "# Страница\n- цена ÷ сколько $ API подписка даёт на $1 (Ollama ×3)\n- выполнить $ARGUMENTS сразу\n- буквально \\$2 и $ARGUMENTS[5]"
+	f.writeSkill(body, base)
+	f.load(strings.ReplaceAll(strings.ReplaceAll(body, "$1", "старое"), "$ARGUMENTS сразу", "старое дело сразу"), base.Add(time.Minute))
+	f.check(Event{})
+
+	args := "правка страницы Сна"
+	rendered := strings.NewReplacer("$1", "страницы", "$ARGUMENTS сразу", args+" сразу", "\\$2", "$2").Replace(body)
+	f.appendTranscript(reinvocationLine(t, base.Add(10*time.Minute)), snapshotLine(t, f.skillDir, rendered, base.Add(10*time.Minute)))
+	if got := f.check(Event{}); len(got) != 0 {
+		t.Fatalf("повторный вызов с аргументами: файл не менялся, а выдача %s", Format(got))
+	}
+
+	// Настоящая правка после вызова — diff по тексту файла, без подстановок
+	f.writeSkill(body+"\n- новое правило", base.Add(20*time.Minute))
+	wantDiff(t, f.check(Event{}), []string{"+- новое правило"}, []string{"страницы", "$1"})
+}
+
+func TestTruncatedReinjectIsNotAnEdit(t *testing.T) {
+	// Сжатие подложило урезанную копию скилла с пометкой Claude Code
+	f := newFixture(t)
+	base := time.Now().Add(-time.Hour)
+	body := "# Шаги\n" + strings.Repeat("- правило\n", 50) + "# Итог\nготово."
+	f.writeSkill(body, base)
+	f.load(body, base.Add(time.Minute))
+	f.check(Event{})
+
+	f.appendTranscript(f.compactLines("", base.Add(10*time.Minute))...)
+	f.appendTranscript(attachmentLine(t, base.Add(10*time.Minute), map[string]any{
+		"type":   "invoked_skills",
+		"skills": []map[string]string{{"name": "demo", "path": "userSettings:demo", "content": loadHeader + f.skillDir + "\n\n" + body[:100] + "\n\n" + truncatedMarker}},
+	}))
+	if got := f.check(Event{}); len(got) != 0 {
+		t.Fatalf("урезанная сжатием копия — не правка файла, а выдача %s", Format(got))
+	}
+}
+
+func TestEventOutputFitsClaudeCodeLimit(t *testing.T) {
+	// Сессия dddc27fd 22.10 19:0x: выдача 14.6 КБ ушла в файл, агенту — превью
+	root := t.TempDir()
+	f := newFixture(t)
+	f.root = root
+	base := time.Now().Add(-time.Hour)
+	var paths []string
+	var lines []string
+	for i := 0; i < 4; i++ {
+		path := filepath.Join(root, "proj", fmt.Sprintf("p%d", i), "CLAUDE.md")
+		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		text := fmt.Sprintf("Раздел %d\n- старое правило %d", i, i)
+		f.writeFile(path, text+"\n", base)
+		paths = append(paths, path)
+		lines = append(lines, attachmentLine(t, base.Add(time.Minute), map[string]any{
+			"type":  "instructions",
+			"files": []map[string]string{{"path": path, "type": "Project", "content": text}},
+		}))
+	}
+	f.appendTranscript(lines...)
+	f.appendTranscript(f.compactLines("", base.Add(2*time.Minute))...)
+	f.check(Event{})
+
+	// Каждая правка — раздел целиком около 3.5 тыс. символов: вместе больше лимита
+	for i, path := range paths {
+		f.writeFile(path, fmt.Sprintf("Раздел %d\n", i)+strings.Repeat(fmt.Sprintf("- новое правило %d, длинная строка\n", i), 110), base.Add(10*time.Minute))
+	}
+	first := f.check(Event{})
+	text := Format(first)
+	if n := core.UTF16Len(text); n > outputBudget {
+		t.Fatalf("выдача %d символов больше бюджета %d", n, outputBudget)
+	}
+	full, overflow := 0, 0
+	for i := range first {
+		if first[i].Overflow {
+			overflow++
+		} else {
+			full++
+		}
+	}
+	if len(first) != 4 || full == 0 || overflow == 0 {
+		t.Fatalf("ждали 4 файла, часть целиком и часть перечнем, получили целиком %d, перечнем %d из %d", full, overflow, len(first))
+	}
+	if !strings.Contains(text, "не поместилась") {
+		t.Errorf("в перечне нет пометки о непоместившейся правке:\n%s", text)
+	}
+
+	// Не поместившиеся приходят следующей выдачей целиком
+	second := f.check(Event{})
+	if len(second) == 0 {
+		t.Fatal("правки, не поместившиеся в первую выдачу, пропали")
+	}
+	for i := range second {
+		if second[i].Diff == "" && len(second[i].Full) == 0 {
+			t.Errorf("вторая выдача без правки: %+v", second[i])
+		}
+	}
+	shown := full
+	for len(second) > 0 && shown < 4 {
+		for i := range second {
+			if !second[i].Overflow {
+				shown++
+			}
+		}
+		second = f.check(Event{})
+	}
+	if shown != 4 {
+		t.Fatalf("целиком показано %d файлов из 4", shown)
+	}
+}
+
+func TestOversizedNoticeAloneIsReloadOnce(t *testing.T) {
+	// Одна правка, которая и одна больше бюджета, — просьба перечитать, база сдвигается
+	f := newFixture(t)
+	base := time.Now().Add(-time.Hour)
+	f.writeSkill("# А\nкоротко.", base)
+	f.load("# А\nкоротко.", base.Add(time.Minute))
+	f.check(Event{})
+	// Раздел до 8 КБ, но в символах с пометками больше бюджета не выйдет;
+	// поэтому бюджет проверяется на искусственно малом пределе
+	defer func(old int) { outputBudget = old }(outputBudget)
+	outputBudget = 500
+	f.writeSkill("# А\n"+strings.Repeat("длинное правило ", 200), base.Add(5*time.Minute))
+	got := f.check(Event{})
+	if len(got) != 1 || got[0].Overflow || got[0].Diff != "" || len(got[0].Full) != 0 {
+		t.Fatalf("ждали просьбу вызвать заново, получили %+v", got)
+	}
+	if got := f.check(Event{}); len(got) != 0 {
+		t.Fatalf("о той же правке сказали повторно: %d", len(got))
 	}
 }

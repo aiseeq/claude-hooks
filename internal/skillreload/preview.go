@@ -84,6 +84,8 @@ func WritePreview(w io.Writer, r *PreviewResult) {
 			n := &r.Notices[path][i]
 			form := fmt.Sprintf("diff %d Б", n.DiffBytes)
 			switch {
+			case n.Overflow:
+				form = fmt.Sprintf("не поместилась, перечнем, diff %d Б", n.DiffBytes)
 			case n.Lost:
 				form = "текст потерян"
 			case n.Diff == "" && len(n.Full)+len(n.Dropped) > 0:

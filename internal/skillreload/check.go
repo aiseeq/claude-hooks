@@ -191,8 +191,11 @@ func Format(notices []Notice) string {
 	for i := range notices {
 		parts = append(parts, notices[i].format())
 	}
-	return strings.Join(parts, "\n\n")
+	return strings.Join(parts, noticeSeparator)
 }
+
+// noticeSeparator — между выдачами по файлам
+const noticeSeparator = "\n\n"
 
 func (n *Notice) format() string {
 	var subject, reload string
@@ -206,6 +209,13 @@ func (n *Notice) format() string {
 		reload = fmt.Sprintf("Перечитай его (Read %s), прежде чем работать дальше.", n.Path)
 	}
 	switch {
+	case n.Overflow:
+		sections := "разделы не определены"
+		if len(n.Sections) > 0 {
+			sections = "изменены разделы: «" + strings.Join(n.Sections, "», «") + "»"
+		}
+		return fmt.Sprintf("%s: правка (diff %.1f КБ) не поместилась в эту выдачу, %s. %s Иначе она придёт целиком следующей выдачей.",
+			subject, float64(n.DiffBytes)/1024, sections, reload)
 	case n.Lost:
 		return subject + ": текст, бывший у тебя в контексте, не сохранился, правку не посчитать. " + reload
 	case n.Diff == "" && len(n.Full)+len(n.Dropped) > 0:
