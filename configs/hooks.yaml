@@ -20,6 +20,12 @@ tools:
   kill_guard:
     enabled: true
 
+  # Напоминает агенту вызвать скилл заново, когда SKILL.md изменён после вызова:
+  # текст скилла в контексте — снимок на момент вызова (UserPromptSubmit, PostToolBatch).
+  # Без ключа включено
+  skill_reload:
+    enabled: true
+
   # Блокирует явный выбор модели, отсутствующей в ~/.config/models/approved
   model_guard:
     enabled: false

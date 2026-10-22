@@ -26,3 +26,7 @@ categories:
             pattern: "cobra.Command"
             reason: >-
               Подкоманды account — та же таблица подкоманд CLI, что в main.go.
+          - file: "cmd/claude-hooks/skillreload.go"
+            pattern: "cobra.Command"
+            reason: >-
+              Подкоманда skill-scan — та же таблица подкоманд CLI, что в main.go.

@@ -39,6 +39,12 @@ type ToolInput struct {
 	CWD            string          `json:"cwd,omitempty"`
 	TranscriptPath string          `json:"transcript_path,omitempty"`
 
+	// AgentID и AgentType приходят, когда событие случилось в субагенте:
+	// у него свой транскрипт, а форк (agent_type "fork") наследует контекст
+	// родителя
+	AgentID   string `json:"agent_id,omitempty"`
+	AgentType string `json:"agent_type,omitempty"`
+
 	// Message и NotificationType заполняются для события Notification:
 	// текст и тип (permission_prompt, idle_prompt и т.д.)
 	Message          string `json:"message,omitempty"`

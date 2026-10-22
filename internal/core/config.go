@@ -107,6 +107,9 @@ func DefaultConfig() *Config {
 			"write_guard": {
 				Enabled: true,
 			},
+			"skill_reload": {
+				Enabled: true,
+			},
 			"notifier": {
 				Enabled:         true,
 				Sound:           true,

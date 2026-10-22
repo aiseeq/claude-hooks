@@ -11,6 +11,11 @@
         "hooks": [{ "type": "command", "command": "$HOME/.claude/hooks/claude-hooks user-prompt-submit", "timeout": 3 }]
       }
     ],
+    "PostToolBatch": [
+      {
+        "hooks": [{ "type": "command", "command": "$HOME/.claude/hooks/claude-hooks post-tool-batch", "timeout": 3 }]
+      }
+    ],
     "Notification": [
       {
         "hooks": [{ "type": "command", "command": "$HOME/.claude/hooks/claude-hooks notification", "timeout": 3 }]

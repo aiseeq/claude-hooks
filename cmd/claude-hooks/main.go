@@ -67,6 +67,7 @@ func execute() int {
 		newHookCmd(hookStop, "Обработать Stop hook", &exitCode),
 		newHookCmd(hookNotification, "Обработать Notification hook", &exitCode),
 		newHookCmd(hookUserPromptSubmit, "Обработать UserPromptSubmit hook", &exitCode),
+		newHookCmd(hookPostToolBatch, "Обработать PostToolBatch hook", &exitCode),
 		newNotifyCmd(),
 		newStatusLineCmd(),
 		newLimitsCmd(),
@@ -75,6 +76,7 @@ func execute() int {
 		newVersionCmd(),
 		newStyleCmd(&exitCode),
 		newModelScanCmd(),
+		newSkillScanCmd(),
 		newDeliverAlertCmd(),
 	)
 
@@ -131,6 +133,7 @@ const (
 	hookStop             = "stop"
 	hookNotification     = "notification"
 	hookUserPromptSubmit = "user-prompt-submit"
+	hookPostToolBatch    = "post-tool-batch"
 )
 
 // newHookCmd создает команду обработки хука, записывающую exit-код по указателю
@@ -169,11 +172,18 @@ func runHook(ctx context.Context, hookType string) (int, error) {
 		defer cancel()
 		return runPreToolUse(hookCtx, data, config, logger)
 	case hookUserPromptSubmit:
-		// Отправка запроса ничего не проверяет: она лишь отмечает, что работа
-		// возобновилась, и без неё ответ без единого вызова инструмента остался
-		// бы незамеченным
+		// Отправка запроса ничего не блокирует: она отмечает, что работа
+		// возобновилась (без неё ответ без единого вызова инструмента остался
+		// бы незамеченным), и напоминает о скиллах, изменённых после вызова.
+		// Срабатывает и на сообщение другой сессии, и посреди хода
 		input := parseSessionInput(logger, hookType, data)
 		saveState(logger, input.SessionID, core.StateWorking)
+		remindStaleSkills(eventUserPromptSubmit, input, config, logger)
+		return exitAllowed, nil
+	case hookPostToolBatch:
+		// Пакет инструментов — место напоминания в длинном ходе и у субагентов,
+		// до которых UserPromptSubmit не доходит
+		remindStaleSkills(eventPostToolBatch, parseSessionInput(logger, hookType, data), config, logger)
 		return exitAllowed, nil
 	case hookStop:
 		runSessionEvent(core.EventStop, data, config, logger)
