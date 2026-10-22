@@ -237,6 +237,21 @@ func runPreToolUse(ctx context.Context, data []byte, config *core.Config, logger
 func runSessionEvent(eventName string, data []byte, config *core.Config, logger core.Logger) {
 	input := parseSessionInput(logger, eventName, data)
 
+	// Конец хода, который проверит question-check, может не наступить: на
+	// вердикт «лишний» агент продолжит. Звонит тогда question-check после
+	// вердикта, а состояние сессии до него не трогается — им же решается
+	// переход, по которому звонят
+	if eventName == core.EventStop && stopAwaitsQuestionCheck(input, config, logger, time.Now()) {
+		logger.Info("alert muted", "hook", eventName, "session", input.SessionID, "reason", reasonAwaitsQuestionCheck)
+		return
+	}
+	announceSessionEvent(eventName, input, config, logger)
+}
+
+// announceSessionEvent решает по событию сессии, запоминает состояние и зовёт
+// человека. Общий путь Stop-хука и question-check после вердикта: оповещение
+// у них одно — тот же текст, звук и клик
+func announceSessionEvent(eventName string, input *core.ToolInput, config *core.Config, logger core.Logger) notifier.Decision {
 	// Неинтерактивную сессию человек не ждёт вовсе — ни её остановку, ни её
 	// вопросы: ответить в неё всё равно некому
 	printMode, err := core.PrintModeSession()
@@ -245,7 +260,7 @@ func runSessionEvent(eventName string, data []byte, config *core.Config, logger 
 	}
 	if printMode {
 		logger.Info("alert muted", "hook", eventName, "reason", "неинтерактивная сессия claude -p")
-		return
+		return notifier.Decision{Reason: "неинтерактивная сессия claude -p"}
 	}
 
 	// Строка статуса рисуется отдельным процессом и о ходе сессии не знает —
@@ -280,11 +295,12 @@ func runSessionEvent(eventName string, data []byte, config *core.Config, logger 
 
 	toolConfig, exists := config.Tools["notifier"]
 	if !exists || !toolConfig.Enabled {
-		return
+		return decision
 	}
 	if err := notifier.New(toolConfig, logger).Announce(eventName, input, decision); err != nil {
 		logger.Warn("failed to deliver alert", "hook", eventName, "error", err)
 	}
+	return decision
 }
 
 // parseSessionInput разбирает вход события сессии. Нечитаемый вход — ошибка

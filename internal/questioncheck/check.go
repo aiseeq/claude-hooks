@@ -33,8 +33,7 @@ type Event struct {
 
 // Checker — проверка вопросов в конце хода
 type Checker struct {
-	ClaudeDir   string
-	Targets     []Target
+	Scope       Scope
 	Journals    Journals
 	Judge       Judge
 	JournalPath string
@@ -53,6 +52,8 @@ type Result struct {
 	Reason string
 	// Skip — почему проверка не делалась (для лога хука)
 	Skip string
+	// Verdict — вердикт, если судью звали
+	Verdict string
 }
 
 // Entry — строка журнала срабатываний: по нему Сон считает итог недели
@@ -97,41 +98,28 @@ func DefaultJournalPath() (string, error) {
 // сбой судьи не повод держать человека без ответа
 func (c Checker) Run(ctx context.Context, event Event) Result {
 	now := c.Now()
-	if !now.Before(Until) {
-		return Result{Skip: "эксперимент окончен " + Until.Format("02.01 15:04 MST")}
-	}
-	if event.AgentID != "" {
-		return Result{Skip: "субагент"}
-	}
-	name, err := SessionName(c.ClaudeDir, event.ClaudePID)
-	if err != nil {
-		return Result{Skip: "имя сессии не прочитано: " + err.Error()}
-	}
-	target, ok := MatchTarget(c.Targets, name, event.TranscriptPath)
-	if !ok {
-		return Result{Skip: "не своя сессия: " + name}
+	gate := c.Scope.Gate(now, event)
+	if gate.Status == GateSkip {
+		return Result{Skip: gate.Skip}
 	}
 
-	questions := Questions(event.LastMessage)
+	questions := gate.Questions
 	entry := Entry{
 		Time:       now.Format(time.RFC3339),
-		Session:    target.Name,
+		Session:    gate.Target.Name,
 		SessionID:  event.SessionID,
 		Transcript: event.TranscriptPath,
 		Questions:  Texts(questions),
 	}
 
-	if event.StopHookActive {
+	if gate.Status == GateAfterBlock {
 		// Ход после остановки: повторно не блокировать. В журнал — что агент
 		// дописал, по этому итог недели видит, нашёл ли он ответ сам
 		entry.Verdict = VerdictAfterBlock
 		entry.Message = truncateRunes(event.LastMessage, afterBlockRunes)
 		c.fillTail(&entry, event.TranscriptPath)
 		c.write(entry)
-		return Result{Skip: "stop_hook_active"}
-	}
-	if len(questions) == 0 {
-		return Result{Skip: "вопроса нет"}
+		return Result{Skip: gate.Skip}
 	}
 
 	tail := c.fillTail(&entry, event.TranscriptPath)
@@ -171,12 +159,12 @@ func (c Checker) Run(ctx context.Context, event Event) Result {
 	c.write(entry)
 
 	if entry.Verdict == VerdictBlock {
-		return Result{Block: true, Reason: entry.Reason}
+		return Result{Block: true, Reason: entry.Reason, Verdict: entry.Verdict}
 	}
 	if entry.Verdict != VerdictPass {
 		c.Warn("question check judge failed, answer passed", "verdict", entry.Verdict, "error", entry.Reason)
 	}
-	return Result{}
+	return Result{Verdict: entry.Verdict}
 }
 
 // fillTail дописывает в запись uuid сообщения и признак найденной реплики

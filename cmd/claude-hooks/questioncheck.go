@@ -14,6 +14,7 @@ import (
 
 	"github.com/aiseeq/claude-hooks/internal/core"
 	"github.com/aiseeq/claude-hooks/internal/questioncheck"
+	"github.com/aiseeq/claude-hooks/internal/tools/notifier"
 )
 
 // questionCheckTool — ключ в config.yaml. Отсутствие ключа — включено:
@@ -41,36 +42,129 @@ type stopBlockOutput struct {
 	Reason   string `json:"reason"`
 }
 
+// reasonAwaitsQuestionCheck — почему Stop-хук не позвонил: звонок отдан
+// question-check до вердикта
+const reasonAwaitsQuestionCheck = "ждёт question-check"
+
 // runQuestionCheck проверяет вопросы пользователю в последнем сообщении.
 // Сбои только логируются: конец хода пропускается, человек получает ответ
 func runQuestionCheck(ctx context.Context, input *core.ToolInput, config *core.Config, logger core.Logger, out io.Writer) {
-	if tool, exists := config.Tools[questionCheckTool]; exists && !tool.Enabled {
+	started := time.Now()
+	if !questionCheckEnabled(config) {
 		return
 	}
+	// Тем же решением Stop-хук только что отдал звонок сюда
+	awaited := stopAwaitsQuestionCheck(input, config, logger, started)
 	checker, err := newQuestionChecker(logger)
 	if err != nil {
 		logger.Warn("question check unavailable", "error", err)
+		if awaited {
+			ringAfterQuestionCheck(input, config, logger, started)
+		}
 		return
 	}
-	result := checker.Run(ctx, questioncheck.Event{
+	checkStop(ctx, checker, stopCheck{input: input, config: config, logger: logger, out: out, awaited: awaited, started: started})
+}
+
+// stopCheck — конец хода, который проверяет question-check. awaited — Stop-хук
+// не позвонил и ждёт вердикта; started — когда хук запустился
+type stopCheck struct {
+	input   *core.ToolInput
+	config  *core.Config
+	logger  core.Logger
+	out     io.Writer
+	awaited bool
+	started time.Time
+}
+
+// checkStop прогоняет проверку и, если Stop-хук отдал звонок, звонит сам на
+// всё, кроме остановки: на pass, сбой и таймаут судьи ход кончился, на block
+// агент продолжает и звонить рано. Возвращает решение по звонку, nil — не звонил
+func checkStop(ctx context.Context, checker questioncheck.Checker, check stopCheck) (questioncheck.Result, *notifier.Decision) {
+	input, logger := check.input, check.logger
+	result := checker.Run(ctx, questionCheckEvent(input))
+	switch {
+	case result.Block:
+		logger.Info("question check blocked stop", "session", input.SessionID)
+		if err := json.NewEncoder(check.out).Encode(stopBlockOutput{Decision: "block", Reason: result.Reason}); err != nil {
+			logger.Warn("question check block not printed", "error", err)
+		}
+		return result, nil
+	case result.Skip != "":
+		logger.Debug("question check skipped", "session", input.SessionID, "reason", result.Skip)
+	default:
+		logger.Info("question check let stop through", "session", input.SessionID, "verdict", result.Verdict)
+	}
+	if !check.awaited {
+		return result, nil
+	}
+	return result, ringAfterQuestionCheck(input, check.config, logger, check.started)
+}
+
+// ringAfterQuestionCheck доставляет оповещение конца хода, которое Stop-хук
+// отдал проверке. Если за время проверки состояние сессии записал кто-то ещё
+// (человек отправил новое сообщение), конец хода уже не новость: звонка нет
+func ringAfterQuestionCheck(input *core.ToolInput, config *core.Config, logger core.Logger, started time.Time) *notifier.Decision {
+	changed, err := core.SessionStateChangedSince(input.SessionID, started)
+	if err != nil {
+		// Явный failover: лишний звонок лучше пропущенного
+		logger.Warn("session state change unknown, ringing", "session", input.SessionID, "error", err)
+	}
+	if changed {
+		logger.Info("alert muted", "hook", hookQuestionCheck, "session", input.SessionID, "reason", "состояние сессии записано во время проверки")
+		return nil
+	}
+	decision := announceSessionEvent(core.EventStop, input, config, logger)
+	return &decision
+}
+
+// stopAwaitsQuestionCheck — отдаёт ли Stop-хук звонок question-check. Решает
+// questioncheck.Scope.Gate — та же функция, что внутри проверки; сверх неё —
+// включена ли проверка в config.yaml и стоит ли она в settings.json. Любая
+// неясность — звонит сам Stop-хук
+func stopAwaitsQuestionCheck(input *core.ToolInput, config *core.Config, logger core.Logger, now time.Time) bool {
+	if !questionCheckEnabled(config) {
+		return false
+	}
+	home, err := os.UserHomeDir()
+	if err != nil {
+		logger.Warn("question check scope unknown, stop rings itself", "error", err)
+		return false
+	}
+	if defaultScope(home).Gate(now, questionCheckEvent(input)).Status != questioncheck.GateJudge {
+		return false
+	}
+	registered, err := questioncheck.Registered(filepath.Join(home, ".claude", "settings.json"))
+	if err != nil {
+		logger.Warn("question check registration unknown, stop rings itself", "error", err)
+		return false
+	}
+	return registered
+}
+
+// questionCheckEnabled — отсутствие ключа в config.yaml значит «включено»
+func questionCheckEnabled(config *core.Config) bool {
+	tool, exists := config.Tools[questionCheckTool]
+	return !exists || tool.Enabled
+}
+
+// questionCheckEvent — вход проверки из входа Stop-хука
+func questionCheckEvent(input *core.ToolInput) questioncheck.Event {
+	return questioncheck.Event{
 		SessionID:      input.SessionID,
 		TranscriptPath: input.TranscriptPath,
 		AgentID:        input.AgentID,
 		StopHookActive: input.StopHookActive,
 		LastMessage:    input.LastAssistantMessage,
 		ClaudePID:      os.Getenv("CLAUDE_PID"),
-	})
-	if result.Skip != "" {
-		logger.Debug("question check skipped", "session", input.SessionID, "reason", result.Skip)
-		return
 	}
-	if !result.Block {
-		logger.Info("question check passed", "session", input.SessionID)
-		return
-	}
-	logger.Info("question check blocked stop", "session", input.SessionID)
-	if err := json.NewEncoder(out).Encode(stopBlockOutput{Decision: "block", Reason: result.Reason}); err != nil {
-		logger.Warn("question check block not printed", "error", err)
+}
+
+// defaultScope — сессии лида и work-admin по записям ~/.claude/sessions
+func defaultScope(home string) questioncheck.Scope {
+	return questioncheck.Scope{
+		ClaudeDir: filepath.Join(home, ".claude"),
+		Targets:   questioncheck.DefaultTargets(home),
 	}
 }
 
@@ -88,11 +182,10 @@ func newQuestionChecker(logger core.Logger) (questioncheck.Checker, error) {
 	if err != nil {
 		return questioncheck.Checker{}, err
 	}
-	claudeDir := filepath.Join(home, ".claude")
+	scope := defaultScope(home)
 	return questioncheck.Checker{
-		ClaudeDir:   claudeDir,
-		Targets:     questioncheck.DefaultTargets(home),
-		Journals:    questioncheck.DefaultJournals(claudeDir),
+		Scope:       scope,
+		Journals:    questioncheck.DefaultJournals(scope.ClaudeDir),
 		Judge:       judge,
 		JournalPath: journalPath,
 		Now:         time.Now,

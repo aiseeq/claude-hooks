@@ -72,8 +72,7 @@ func newFixture(t *testing.T, name, project string) *fixture {
 	judge := &stubJudge{verdict: Verdict{Verdict: VerdictPass}}
 	f := &fixture{judge: judge, transcript: transcript}
 	f.checker = Checker{
-		ClaudeDir:   claudeDir,
-		Targets:     DefaultTargets(home),
+		Scope:       Scope{ClaudeDir: claudeDir, Targets: DefaultTargets(home)},
 		Journals:    DefaultJournals(claudeDir),
 		Judge:       judge,
 		JournalPath: filepath.Join(home, "state", "question-check.jsonl"),

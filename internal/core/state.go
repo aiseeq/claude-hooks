@@ -85,6 +85,28 @@ func LoadSessionState(sessionID string) (SessionState, error) {
 	}
 }
 
+// SessionStateChangedSince — записал ли кто-то состояние сессии после since.
+// Нужно хуку, который решает долго: за это время человек мог отправить новое
+// сообщение, и решение по старому концу хода уже неверно. Сессия без записи
+// не менялась
+func SessionStateChangedSince(sessionID string, since time.Time) (bool, error) {
+	if sessionID == "" {
+		return false, nil
+	}
+	path, err := sessionStatePath(sessionID)
+	if err != nil {
+		return false, err
+	}
+	info, err := os.Stat(path)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return false, nil
+		}
+		return false, fmt.Errorf("cannot stat session state: %w", err)
+	}
+	return info.ModTime().After(since), nil
+}
+
 // sessionStatePath возвращает путь к файлу состояния сессии
 func sessionStatePath(sessionID string) (string, error) {
 	// Имя сессии приходит извне и в путь попадать не должно
