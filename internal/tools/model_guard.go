@@ -120,8 +120,8 @@ func withoutHereDocBodies(command string) string {
 		for _, words := range splitSimpleCommands(plain) {
 			for i := 0; i < len(words); i++ {
 				value := words[i].text
-				if strings.HasPrefix(value, "<<-") {
-					delimiters = append(delimiters, delimiter{name: strings.TrimPrefix(value, "<<-"), stripTab: true})
+				if after, ok := strings.CutPrefix(value, "<<-"); ok {
+					delimiters = append(delimiters, delimiter{name: after, stripTab: true})
 				} else if strings.HasPrefix(value, "<<") && len(value) > 2 {
 					delimiters = append(delimiters, delimiter{name: strings.TrimPrefix(value, "<<")})
 				} else if value == "<<" && i+1 < len(words) {
