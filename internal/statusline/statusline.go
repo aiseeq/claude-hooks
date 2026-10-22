@@ -145,8 +145,9 @@ func Render(ctx context.Context, stdin io.Reader, logger core.Logger) (string, e
 	}
 	weekLabel := "нед"
 	if store != nil && len(store.Accounts) > 1 && owner != "" {
-		// Учёток несколько: полоса называет, чья неделя
-		weekLabel += "·" + store.ShortName(owner)
+		// Учёток несколько: полоса подписана учёткой, чья неделя, без «нед»
+		// (пользователь 22.10: достаточно «<учётка> ▓▓▓▓▓▓▓▓▓░ 96%»)
+		weekLabel = store.ShortName(owner)
 	}
 
 	line, title := build(ctx, input, weekLabel, now, logger)
