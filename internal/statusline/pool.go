@@ -132,7 +132,9 @@ func forecastPool(store *accounts.Store, snapshot *limitsSnapshot, historyPath s
 	if err != nil {
 		return PoolForecast{}, err
 	}
-	f := store.Forecast(accountUsage(snapshot, now), rate, now)
+	usage := accountUsage(snapshot, now)
+	f := store.Forecast(usage, rate, now)
+	pastTracks(f.Tracks, usage, steps, now)
 	return PoolForecast{Forecast: f, Pace: f.Pace.String(), RateSpanHours: span.Hours(), HorizonHours: accounts.PoolHorizon.Hours()}, nil
 }
 
@@ -175,4 +177,24 @@ func WritePoolJSON(w io.Writer) error {
 	enc := json.NewEncoder(w)
 	enc.SetIndent("", " ")
 	return enc.Encode(f)
+}
+
+// pastTracks дописывает в начало путей учёток шаги их нынешней недели за
+// окно темпа: прошлое для графика пула. Неделя узнаётся по сбросу
+func pastTracks(tracks []accounts.Track, usage map[string]accounts.Usage, steps []limitStep, now time.Time) {
+	from := now.Add(-poolRateWindow)
+	for i := range tracks {
+		resets := usage[tracks[i].Email].Week.ResetsAt
+		if resets.IsZero() {
+			continue
+		}
+		var past []accounts.Point
+		for _, st := range steps {
+			if st.ResetsAt.Equal(resets) && !st.At.Before(from) && st.At.Before(now) {
+				past = append(past, accounts.Point{At: st.At, Used: st.SevenDay})
+			}
+		}
+		sort.SliceStable(past, func(a, b int) bool { return past[a].At.Before(past[b].At) })
+		tracks[i].Points = append(past, tracks[i].Points...)
+	}
 }

@@ -76,3 +76,32 @@ func TestForecastMixedTiers(t *testing.T) {
 		t.Error("разные тарифы не помечены")
 	}
 }
+
+// Путь доли учётки: с нынешней доли, до пустой, сброс в ноль, новая неделя
+func TestForecastTracks(t *testing.T) {
+	now := time.Date(2026, 10, 22, 12, 0, 0, 0, time.UTC)
+	s := &Store{Active: "a", Accounts: []Account{account("a", 20*day, now), account("b", 20*day, now)}}
+	resets := now.Add(2 * day)
+	f := s.Forecast(map[string]Usage{"a@example.com": {Week: Window{Used: 90, ResetsAt: resets}}}, 1, now)
+	if len(f.Tracks) != 2 || f.Tracks[0].Email != "a@example.com" {
+		t.Fatalf("пути: %+v", f.Tracks)
+	}
+	a := f.Tracks[0]
+	if p := a.Points[0]; !p.At.Equal(now) || p.Used != 90 {
+		t.Errorf("начало пути: %+v", p)
+	}
+	full, zero := false, false
+	for _, p := range a.Points {
+		full = full || p.Used >= WeekEmptyPercent
+		zero = zero || p.At.Equal(resets) && p.Used == 0
+	}
+	if !full || !zero {
+		t.Errorf("путь без опустения или сброса: %+v", a.Points)
+	}
+	if len(a.Resets) < 2 || !a.Resets[0].Equal(resets) {
+		t.Errorf("сбросы a: %v", a.Resets)
+	}
+	if b := f.Tracks[1]; len(b.Resets) == 0 || b.Points[0].Used != 0 {
+		t.Errorf("b начинает неделю, когда a пуста: %+v", b)
+	}
+}

@@ -52,6 +52,21 @@ type Spell struct {
 	To    time.Time `json:"to"`
 }
 
+// Point — доля недели учётки в момент
+type Point struct {
+	At   time.Time `json:"at"`
+	Used float64   `json:"used"`
+}
+
+// Track — путь доли учётки в прогнозе: точки изломов (начало и конец
+// расхода, сброс), между ними доля меняется линейно; Resets — сбросы недели
+// на горизонте, включая недели, которые прогноз начал
+type Track struct {
+	Email  string      `json:"email"`
+	Points []Point     `json:"points"`
+	Resets []time.Time `json:"resets"`
+}
+
 // Forecast — прогноз пула при темпе Rate (% недели одной учётки в час)
 type Forecast struct {
 	Rate float64 `json:"ratePerHour"`
@@ -62,6 +77,7 @@ type Forecast struct {
 	RefillAt    time.Time `json:"refillAt,omitzero"`
 	RefillEmail string    `json:"refillEmail,omitempty"`
 	Plan        []Spell   `json:"plan"`
+	Tracks      []Track   `json:"tracks"`
 	// MixedTiers — тарифы учёток разные (Max 5x и 20x): доли недели
 	// несопоставимы, а прогноз считает их равными (22.10 у всех трёх 20x)
 	MixedTiers bool `json:"mixedTiers"`
@@ -71,7 +87,7 @@ type Forecast struct {
 func (s *Store) Forecast(usage map[string]Usage, rate float64, now time.Time) Forecast {
 	f := Forecast{Rate: rate, MixedTiers: s.mixedTiers()}
 	run := s.simulate(usage, rate, now)
-	f.DryAt, f.RefillAt, f.RefillEmail, f.Plan = run.dryAt, run.refillAt, run.refillEmail, run.plan
+	f.DryAt, f.RefillAt, f.RefillEmail, f.Plan, f.Tracks = run.dryAt, run.refillAt, run.refillEmail, run.plan, run.tracks
 	switch {
 	case !f.DryAt.IsZero():
 		f.Pace = PaceOver
@@ -86,6 +102,7 @@ type poolRun struct {
 	dryAt, refillAt time.Time
 	refillEmail     string
 	plan            []Spell
+	tracks          []Track
 }
 
 // simulate — один прогон пула шагами poolStep
@@ -103,10 +120,31 @@ func (s *Store) simulate(usage map[string]Usage, rate float64, now time.Time) po
 		}
 	}
 	var run poolRun
-	for t := now; t.Before(now.Add(PoolHorizon)); t = t.Add(poolStep) {
+	tracks := make(map[string]*Track, len(s.Accounts))
+	for i := range s.Accounts {
+		a := &s.Accounts[i]
+		if !logins[a.UUID].usableAt(now) {
+			continue
+		}
+		tr := &Track{Email: a.Email, Points: []Point{{At: now, Used: weeks[a.Email].Used}}}
+		if w, ok := weeks[a.Email]; ok {
+			tr.Resets = append(tr.Resets, w.ResetsAt)
+		}
+		tracks[a.Email] = tr
+	}
+	mark := func(email string, at time.Time, used float64) {
+		if tr := tracks[email]; tr != nil {
+			tr.Points = append(tr.Points, Point{At: at, Used: used})
+		}
+	}
+	spender := ""
+	end := now.Add(PoolHorizon)
+	for t := now; t.Before(end); t = t.Add(poolStep) {
 		cur := make(map[string]Usage, len(weeks))
 		for email, w := range weeks {
 			if !w.ResetsAt.After(t) {
+				mark(email, w.ResetsAt, w.Used)
+				mark(email, w.ResetsAt, 0)
 				delete(weeks, email)
 				continue
 			}
@@ -115,6 +153,10 @@ func (s *Store) simulate(usage map[string]Usage, rate float64, now time.Time) po
 		at := t
 		best, all := pickFrom(sim, statesWith(sim, cur, t, func(a *Account) bool { return logins[a.UUID].usableAt(at) }))
 		if best == nil {
+			if spender != "" {
+				mark(spender, t, weeks[spender].Used)
+				spender = ""
+			}
 			if run.dryAt.IsZero() {
 				run.dryAt = t
 				run.refillAt, run.refillEmail = nextReset(all)
@@ -127,10 +169,26 @@ func (s *Store) simulate(usage map[string]Usage, rate float64, now time.Time) po
 		w, ok := weeks[a.Email]
 		if !ok {
 			w = Window{ResetsAt: t.Add(weekWindow)}
+			if tr := tracks[a.Email]; tr != nil {
+				tr.Resets = append(tr.Resets, w.ResetsAt)
+			}
+		}
+		if spender != a.Email {
+			if spender != "" {
+				mark(spender, t, weeks[spender].Used)
+			}
+			mark(a.Email, t, w.Used)
+			spender = a.Email
 		}
 		w.Used += rate * poolStep.Hours()
 		weeks[a.Email] = w
 		run.plan = extend(run.plan, a.Email, t)
+	}
+	for i := range s.Accounts {
+		if tr := tracks[s.Accounts[i].Email]; tr != nil {
+			tr.Points = append(tr.Points, Point{At: end, Used: weeks[tr.Email].Used})
+			run.tracks = append(run.tracks, *tr)
+		}
 	}
 	return run
 }
