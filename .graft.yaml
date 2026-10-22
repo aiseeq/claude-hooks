@@ -29,10 +29,14 @@ tasks:
           mkdir -p "$dir" "$HOME/.claude/logs"
           cp bin/claude-hooks "$dir/claude-hooks.new"
           mv -f "$dir/claude-hooks.new" "$dir/claude-hooks"
+          # Существующую конфигурацию не трогаем и шаблон рядом не кладём:
+          # копия .new устаревала и путала, какие хуки включены
           if [ -f "$config" ]; then
-            cp configs/hooks.yaml "$config.new"
             echo "Конфигурация сохранена: существующий $config не изменён"
-            echo "Новая версия: $config.new"
+            if ! diff -q "$config" configs/hooks.yaml >/dev/null; then
+              echo "Отличия от шаблона configs/hooks.yaml (- установленный, + шаблон):"
+              diff -u "$config" configs/hooks.yaml || true
+            fi
           else
             cp configs/hooks.yaml "$config"
             echo "Конфигурация создана: $config"

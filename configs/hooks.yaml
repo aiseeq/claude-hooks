@@ -33,7 +33,9 @@ tools:
   # Отклоняет rm/rmdir, на которые Claude Code сам спросит пользователя
   # («Dangerous rm operation on possibly-empty variable path», даже в bypass):
   # rm -f $S/*, "$1"/*, $X/tmp, rm -rf "$D" после D=$(pwd). Агент получает
-  # переписанную форму rm -f "${S:?}"/* и запрос пользователю не всплывает
+  # переписанную форму rm -f "${S:?}"/* и запрос пользователю не всплывает.
+  # То же для относительного глоба после cd («statically-unresolvable target»):
+  # cd X && rm -f cl/* — агенту подсказка указать литеральный абсолютный путь
   rm_guard:
     enabled: true
 

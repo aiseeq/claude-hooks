@@ -26,6 +26,11 @@ import (
 // но только пока команда простая: без ${…}, подоболочек, групп { }, функций,
 // here-doc, аргумента из одной подстановки $(…) и без переприсваивания
 // упомянутых переменных после первой команды.
+//
+// Вторая форма — относительная цель с глобом на конце (*, cl/*) в команде со
+// сменой каталога: Claude Code спрашивает «Dangerous rm operation on
+// statically-unresolvable target» (сверено с Claude Code 2.1.304 и 2.1.308,
+// таблица в тесте), хук просит литеральный абсолютный путь.
 type RmGuardTool struct {
 	*BaseTool
 	lookupEnv func(string) (string, bool)
@@ -40,6 +45,8 @@ func NewRmGuardTool(config core.ToolConfig, logger core.Logger) (*RmGuardTool, e
 }
 
 const rmGuardHeader = "rm по переменной без защиты: Claude Code спросит пользователя и будет ждать ответа. Перепиши команду:"
+
+const rmCdGlobHeader = "rm с относительным глобом после cd: Claude Code спросит пользователя и будет ждать ответа. Перепиши команду:"
 
 const (
 	reName  = `[A-Za-z_][A-Za-z0-9_]*`
@@ -74,27 +81,37 @@ var (
 	rmWrappers     = map[string]bool{"sudo": true, "doas": true, "exec": true, "command": true, "env": true, "nice": true, "nohup": true, "busybox": true, "time": true, "timeout": true, "stdbuf": true, "setsid": true, "ionice": true, "pkexec": true, "runuser": true, "xargs": true}
 	inlineShells   = map[string]bool{"sh": true, "bash": true, "zsh": true, "dash": true, "ksh": true, "ash": true, "mksh": true}
 	declarers      = map[string]bool{"export": true, "declare": true, "typeset": true, "readonly": true, "local": true}
+	dirChangers    = map[string]bool{"cd": true, "pushd": true, "popd": true, "chdir": true}
+	cdWrappers     = map[string]bool{"time": true, "timeout": true, "nice": true, "nohup": true, "env": true, "command": true, "builtin": true, "stdbuf": true, "noglob": true}
+	duration       = regexp.MustCompile(`^[0-9]+(?:\.[0-9]+)?[smhd]?$`)
 )
 
 // ValidateTool проверяет цели rm и rmdir в команде Bash
 func (t *RmGuardTool) ValidateTool(_ context.Context, input *core.ToolInput) (*core.ValidationResult, error) {
 	cmd := input.Command
-	if !t.IsEnabled() || input.ToolName != "Bash" || !strings.Contains(cmd, "rm") || !strings.Contains(cmd, "$") {
+	if !t.IsEnabled() || input.ToolName != "Bash" || !strings.Contains(cmd, "rm") {
 		return &core.ValidationResult{IsValid: true}, nil
 	}
 	script := &shScript{}
 	parseShell(cmd, false, script)
-	vars := t.trackVars(script, input.CWD)
 	var reasons []string
-	for _, c := range script.cmds {
-		reasons = append(reasons, t.checkCommand(c.words, vars, inlineNone)...)
+	if strings.Contains(cmd, "$") {
+		vars := t.trackVars(script, input.CWD)
+		for _, c := range script.cmds {
+			reasons = append(reasons, t.checkCommand(c.words, vars, inlineNone)...)
+		}
 	}
+	header := rmGuardHeader
+	if len(reasons) == 0 {
+		header = rmCdGlobHeader
+	}
+	reasons = append(reasons, cdGlobReasons(script)...)
 	if len(reasons) == 0 {
 		return &core.ValidationResult{IsValid: true}, nil
 	}
 	reasons = deduplicateStrings(reasons)
-	t.Logger().Debug("rm by possibly-empty variable denied", "reasons", len(reasons))
-	violation := core.NewViolation("rm_guard", rmGuardHeader, reasons[0], core.LevelCritical, 0, 0)
+	t.Logger().Debug("rm Claude Code would ask about denied", "reasons", len(reasons))
+	violation := core.NewViolation("rm_guard", header, reasons[0], core.LevelCritical, 0, 0)
 	return core.NewValidationResult(false, []core.Violation{violation}, reasons), nil
 }
 
@@ -402,8 +419,9 @@ const (
 	inlineReparsed        // eval или sh -c "…": текст разбирается повторно
 )
 
-// checkCommand возвращает причины отказа для одной простой команды
-func (t *RmGuardTool) checkCommand(words []shWord, v *rmVars, src inline) []string {
+// commandWords слова простой команды начиная с имени утилиты: без then/do,
+// присваиваний, перенаправлений и обёрток sudo, timeout, xargs; пусто — команды нет
+func commandWords(words []shWord) []shWord {
 	words = stripKeywords(words)
 	i := 0
 	for i < len(words) && (assignWord.MatchString(words[i].raw) || words[i].redirect ||
@@ -414,11 +432,20 @@ func (t *RmGuardTool) checkCommand(words []shWord, v *rmVars, src inline) []stri
 	if i >= len(words) {
 		return nil
 	}
-	name := commandName(words[i].raw)
-	args := words[i+1:]
+	return words[i:]
+}
+
+// checkCommand возвращает причины отказа для одной простой команды
+func (t *RmGuardTool) checkCommand(words []shWord, v *rmVars, src inline) []string {
+	words = commandWords(words)
+	if len(words) == 0 {
+		return nil
+	}
+	name := commandName(words[0].raw)
+	args := words[1:]
 	switch {
 	case name == "rm" || name == "rmdir":
-		return t.checkTargets(words[i:], v, src)
+		return t.checkTargets(words, v, src)
 	case name == "eval":
 		return t.checkInline(joinText(args), v, inlineReparsed)
 	case name == "trap":
@@ -606,6 +633,105 @@ func guardHint(src inline, names []string, prefix string) hint {
 		}
 		return fmt.Sprintf("%sперепиши %s или укажи литеральный путь", prefix, rmInvocation(words, target, guardTarget(words[target].text)))
 	}
+}
+
+// cdGlobReasons rm с относительной целью, которая после сложения с рабочей
+// папкой кончается на /* (*, cl/*, ./*, ../*), в команде со сменой каталога.
+// Claude Code не знает, в каком каталоге раскроется глоб, и спрашивает
+// «Dangerous rm operation on statically-unresolvable target» даже в
+// bypassPermissions. Сменой каталога он считает cd, pushd, popd и chdir в любом
+// месте команды: после rm, после then и do, внутри $(…) и sh -c '…'. rm внутри
+// строки (node -e '…', echo "…", eval '…') и после sudo, xargs, find -exec он
+// не проверяет
+func cdGlobReasons(s *shScript) []string {
+	cmds := withInlineScripts(s.cmds)
+	if !changesDir(cmds) {
+		return nil
+	}
+	var reasons []string
+	for _, c := range cmds {
+		words := cdCommandWords(c.words)
+		if len(words) == 0 {
+			continue
+		}
+		if name := commandName(words[0].raw); name != "rm" && name != "rmdir" {
+			continue
+		}
+		for k, w := range words[1:] {
+			if w.redirect || strings.HasPrefix(w.raw, "-") || !relativeDirGlob(w.text) {
+				continue
+			}
+			absolute := "/полный/путь/" + strings.TrimPrefix(unquoteWord(w.text), "./")
+			reasons = append(reasons, fmt.Sprintf("%s: после cd каталог глоба %s заранее не известен, укажи литеральный абсолютный путь: %s",
+				rmInvocation(words, k+1, ""), w.text, rmInvocation(words, k+1, absolute)))
+		}
+	}
+	return reasons
+}
+
+// cdCommandWords слова команды с имени утилиты так, как их видит проверка
+// Claude Code: без then/do/!, присваиваний, перенаправлений и обёрток, которые
+// он снимает (time, timeout 5, nice, nohup, env, command, builtin, stdbuf, noglob);
+// sudo и xargs он не снимает. Пусто — команды нет
+func cdCommandWords(words []shWord) []shWord {
+	words = stripKeywords(words)
+	i := 0
+	for i < len(words) && (assignWord.MatchString(words[i].raw) || words[i].redirect) {
+		i++
+	}
+	for i < len(words) && cdWrappers[commandName(words[i].raw)] {
+		i++
+		for i < len(words) && (strings.HasPrefix(words[i].raw, "-") || assignWord.MatchString(words[i].raw) || duration.MatchString(words[i].raw)) {
+			i++
+		}
+	}
+	if i >= len(words) {
+		return nil
+	}
+	return words[i:]
+}
+
+// withInlineScripts команды вместе с командами скриптов sh -c '…': Claude Code
+// разбирает их строку так же, как саму команду
+func withInlineScripts(cmds []shCommand) []shCommand {
+	var out []shCommand
+	for _, c := range cmds {
+		out = append(out, c)
+		words := cdCommandWords(c.words)
+		if len(words) == 0 || !inlineShells[commandName(words[0].raw)] {
+			continue
+		}
+		args := words[1:]
+		for k, w := range args {
+			if strings.HasPrefix(w.raw, "-") && strings.Contains(w.raw[1:], "c") && k+1 < len(args) {
+				inner := &shScript{}
+				parseShell(unquoteWord(args[k+1].text), false, inner)
+				out = append(out, withInlineScripts(inner.cmds)...)
+				break
+			}
+		}
+	}
+	return out
+}
+
+// changesDir в команде есть смена каталога
+func changesDir(cmds []shCommand) bool {
+	for _, c := range cmds {
+		if words := cdCommandWords(c.words); words != nil && dirChangers[commandName(words[0].raw)] {
+			return true
+		}
+	}
+	return false
+}
+
+// relativeDirGlob цель относительная (не /…, ~…, $…) и, сложенная с рабочей
+// папкой, кончается на /*
+func relativeDirGlob(text string) bool {
+	target := unquoteWord(text)
+	if target == "" || strings.HasPrefix(target, "/") || strings.HasPrefix(target, "~") || strings.ContainsAny(text, "$`") {
+		return false
+	}
+	return strings.HasSuffix(path.Clean("/cwd/"+target), "/*")
 }
 
 // allResolved все переменные цели известны (HOME — из окружения)

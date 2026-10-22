@@ -289,3 +289,177 @@ func TestRmGuardReason(t *testing.T) {
 		}
 	}
 }
+
+// TestRmGuardCdGlobMatchesClaudeCode вторая форма: относительная цель с глобом
+// на конце в команде со сменой каталога. Каждую команду прогнали через
+// claude -p --model opus в bypassPermissions с песочницей вне рабочей папки
+// (Claude Code 2.1.308, первые три батча и на 2.1.304 — вердикты совпали), true —
+// Claude Code остановил её запросом «Dangerous rm operation on
+// statically-unresolvable target». cl/*/ и ../* без cd он спрашивает по другой
+// причине, хук их без cd не трогает
+func TestRmGuardCdGlobMatchesClaudeCode(t *testing.T) {
+	for _, tc := range []struct {
+		command string
+		deny    bool
+	}{
+		{`cd /home/u/sb && rm -f cl/*`, true},
+		{`cd /home/u/sb && rm -f ./cl/*`, true},
+		{`cd /home/u/sb && rm -f cl/x`, false},
+		{`cd /home/u/sb && rm -f /home/u/sb/cl/*`, false},
+		{`cd /home/u/sb && node -e 'const x="rm -f cl/*"; console.log(x.length)'`, false},
+		{`cd /home/u/sb && rm -f */x`, false},
+		{`cd /home/u/sb && rm -rf cl/*/`, true},
+		{`cd /home/u/sb && echo $? && rm -f cl/*`, true},
+		{`cd /home/u/sb && rm -f cl/* && echo "$(date +%s)"`, true},
+		{"cd /home/u/sb && cat > hd.txt <<'EOT'\nx\nEOT\nrm -f cl/*", true},
+		{`cd /home/u/sb && rm -f cl/* 2>/dev/null`, true},
+		{`cd /home/u/sb && rm -f cl/*; for f in a; do :; done`, true},
+		{`cd /home/u/sb && D=x && rm -f cl/*`, true},
+		{`cd /home/u/sb && rm -f ../sb/cl/*`, true},
+		{`cd /home/u/sb && rmdir cl/* 2>/dev/null; true`, true},
+		{`cd /home/u/sb && X=$(ls) && rm -f cl/*`, true},
+		{`cd /home/u/sb && rm -f cl/* a/*`, true},
+		{`cd /home/u/sb && rm -f -- cl/*`, true},
+		{`cd /home/u/sb && touch cl/1 && for t in a; do echo $t; done && rm -f cl/*`, true},
+		{`cd /home/u/sb && echo ${HOME} && rm -f /home/u/sb/cl/*`, false},
+		{`cd /home/u/sb && rm -f cl/*.png`, false},
+		{`cd /home/u/sb && rm -f cl/**`, false},
+		{`rm -f cl/*`, false},
+		{`rm -f a/*`, false},
+		{`X=$(cd /home/u/sb && pwd); rm -f a/*`, true},
+		{`bash -c 'cd /home/u/sb && rm -f cl/*'`, true},
+		{`cd /home/u/sb && bash -c 'rm -f cl/*'`, true},
+		{`cd /home/u/sb && rm -f cl/[ab]*`, false},
+		{`cd /home/u/sb && rm -f cl/a*`, false},
+		{`cd /home/u/sb && rm -rf a/* && rm -f ~/nonexistent-q/*`, true},
+		{`cd /home/u/sb && sh -c 'echo hi'; rm -f a/*`, true},
+		{`cd /home/u/sb && rm -f a/.??*`, false},
+		{`cd /home/u/sb && rm -rf a`, false},
+		{`cd /home/u/sb && rm -f a/z && rm -f cl/z`, false},
+		{`cd /home/u/sb && echo 'rm -f cl/*' > note.txt`, false},
+		{`cd /home/u/sb && git status 2>/dev/null; echo rm -f cl/*`, false},
+		{`cd /home/u/sb; rm -f cl/*`, true},
+		{`cd /home/u/sb/a && rm -rf *`, true},
+		{`D=/home/u/sb/a; cd $D && rm -rf *`, true},
+		{`cd /home/u/sb && for t in a b; do touch cl/$t; done; rm -f cl/*`, true},
+		{`cd /home/u/sb && rm -f cl/* && echo ${HOME:0:1}`, true},
+		{`cd /home/u/sb && { rm -f cl/*; }`, true},
+		{`pushd /home/u/sb >/dev/null && rm -f cl/*; popd >/dev/null`, true},
+		{`(cd /home/u/sb && rm -f cl/*)`, true},
+		{`cd "/home/u/sb" && rm -f "cl"/*`, true},
+		{`D=/home/u/sb; cd "$D" && rm -rf cl/* && echo ${D}`, true},
+		{`cd /home/u/sb/a && rm -rf .[!.]* *`, true},
+		// команда, всплывшая пользователю 22.10, в песочнице
+		{`cd /home/u/sb && rm -f cl/* && magick light/1440x900-full.png -crop 800x1100+320+0 +repage cl/l-%02d.png && magick dark/1440x900-full.png -crop 800x1100+320+0 +repage cl/d-%02d.png && ls cl`, true},
+		{`cd /home/u/sb && rm -f cl/* && ls cl`, true},
+		{`cd /home/u/sb && rm -f cl/* | cat`, true},
+		{`cd /home/u/sb && rm -f cl/*; ls | head -1`, true},
+		{`cd /home/u/sb && rm -f ~/nonexistent-q/*`, false},
+		{`cd /home/u/sb && for f in a; do rm -f cl/*; done`, true},
+		{`if true; then cd /home/u/sb; fi; rm -f a/*`, true},
+		{`cd /home/u/sb && if true; then rm -f cl/*; fi`, true},
+		{`{ cd /home/u/sb; rm -f cl/*; }`, true},
+		{`pushd /home/u/sb; rm -f cl/*`, true},
+		{`cd /home/u/sb && timeout 5 rm -f cl/*`, true},
+		{`cd /home/u/sb && command rm -f cl/*`, true},
+		{`cd /home/u/sb && xargs rm -f cl/* </dev/null`, false},
+		{`cd /home/u/sb && rm -f "cl/*"`, true},
+		{`echo $(cd /home/u/sb; rm -f cl/*)`, true},
+		{`cd /home/u/sb && eval 'rm -f cl/*'`, false},
+		{`rm -f a/*; cd /home/u/sb`, true},
+		{`cd /home/u/sb && find . -name zz -exec rm -f cl/* \;`, false},
+		{`cd /home/u/sb && rm -f cl/* && ls cl | wc -l`, true},
+		{`cd /home/u/sb || true; rm -f a/*`, true},
+		{`true || true; cd /home/u/sb && rm -f cl/*`, true},
+		{`cd /home/u/sb && rm -f cl/* || true`, true},
+		{`cd /home/u/sb && echo "a|b" && rm -f cl/*`, true},
+		{`cd /home/u/sb && (ls | head -1); rm -f cl/*`, true},
+		{`for d in /home/u/sb/a; do cd /home/u/sb/a; rm -rf *; done`, true},
+		{`for d in a; do cd $d; done; rm -f cl/*`, true},
+		{`cd /home/u/sb/a; for f in x; do rm -rf *; done`, true},
+		{`while false; do cd /home/u/sb; done; rm -f a/*`, true},
+		{`for f in a; do cd /home/u/sb; done; rm -f a/*`, true},
+		{`if true; then cd /home/u/sb; fi && rm -f a/*`, true},
+		{`true && { cd /home/u/sb; }; rm -f a/*`, true},
+		{`if cd /home/u/sb; then rm -f cl/*; fi`, true},
+		{`! cd /home/u/sb; rm -f a/*`, true},
+		{`cd /home/u/sb && sudo -n rm -f cl/* 2>/dev/null; true`, false},
+		{`cd /home/u/sb && env rm -f cl/*`, true},
+		{`cd /home/u/sb && nice rm -f cl/*`, true},
+		{`cd /home/u/sb && nohup rm -f cl/* >/dev/null 2>&1`, true},
+		{`cd /home/u/sb && time rm -f cl/*`, true},
+		{`cd /home/u/sb && LC_ALL=C rm -f cl/*`, true},
+		{`cd /home/u/sb && \rm -f cl/*`, true},
+		{`cd /home/u/sb && /bin/rm -f cl/*`, true},
+		{`time cd /home/u/sb; rm -f a/*`, true},
+		{`command cd /home/u/sb; rm -f a/*`, true},
+		{`builtin cd /home/u/sb && rm -f cl/*`, true},
+		{`cd /home/u/sb && rm -f cl/./*`, true},
+		{`cd /home/u/sb && rm -f cl//*`, true},
+		{`cd /home/u/sb && rm -f cl/*/*`, true},
+		{`cd /home/u/sb && rm -f */`, true},
+		{`echo a | cat; cd /home/u/sb && rm -f cl/* && echo ${HOME:0:1}`, true},
+		{`echo a | cat; { cd /home/u/sb; rm -f cl/*; }`, true},
+		{"echo a | cat; cd /home/u/sb && cat > hd.txt <<'EOT'\nx\nEOT\nrm -f cl/*", true},
+		{`echo a | cat; cd /home/u/sb && rm -f cl/*; echo $(date +%s)`, true},
+		{`echo a | cat; cd /home/u/sb && rm -f cl/*; echo $?`, true},
+		{`cd /home/u/sb && ls 2>&1 | grep -v png; rm -f cl/*; for t in light dark; do echo ${t:0:1}; done`, true},
+		{`ls | grep -v png; cd /home/u/sb && rm -f cl/*; for t in a; do echo $t; done`, true},
+		{`ls | cat; cd /home/u/sb && (rm -f cl/*)`, true},
+		{`echo a | cat; cd /home/u/sb && rm -f cl/*; echo ${HOME}`, true},
+		{`D=/home/u/sb/a; for f in x; do cd $D; rm -rf *; done`, true},
+	} {
+		r := validateRm(t, tc.command)
+		if r.IsValid == tc.deny {
+			t.Errorf("deny=%v, ожидалось %v: %q %v", !r.IsValid, tc.deny, tc.command, r.Suggestions)
+		}
+	}
+}
+
+// TestRmGuardCdGlobStricter формы, на которых Claude Code в прогоне не спросил,
+// а хук отклоняет: конвейер перед rm в команде без $, { }, ( ), here-doc и
+// циклов с переменной; cd на переменную цикла с rm в том же цикле. Граница
+// этих исключений в Claude Code не выяснена до конца, а лишний отказ стоит
+// агенту одной переписанной команды — пропущенный стоит человеку окна
+func TestRmGuardCdGlobStricter(t *testing.T) {
+	for _, command := range []string{
+		`cd /home/u/sb && ls | head -1; rm -f cl/*`,
+		`ls | head -1 && cd /home/u/sb && rm -f cl/*`,
+		`cd /home/u/sb | true; rm -f a/*`,
+		`cd /home/u/sb && ls cl | wc -l && rm -f cl/*`,
+		`cd /home/u/sb && echo a | grep -q a; rm -f cl/*`,
+		`echo a |& cat; cd /home/u/sb && rm -f cl/*`,
+		`X=$(ls | head -1); cd /home/u/sb && rm -f cl/*`,
+		`cd /home/u/sb && echo a | cat && rm -f cl/*`,
+		`echo a | cat; cd /home/u/sb; rm -f cl/*`,
+		"cd /home/u/sb; echo a | cat\nrm -f cl/*",
+		`echo a | cat; cd /home/u/sb && rm -f cl/*; for t in a; do :; done`,
+		`echo a | cat; cd /home/u/sb && rm -f cl/*; X=1`,
+		`for d in /home/u/sb/a /home/u/sb/b; do cd $d; rm -rf *; done`,
+		`for d in /home/u/sb/a; do cd $d && rm -rf *; done`,
+		`for d in /home/u/sb/a /home/u/sb/b; do cd $d; rm -rf *; done; echo ${HOME}`,
+		`for d in /home/u/sb/a /home/u/sb/b; do cd $d; rm -rf cl/*; done`,
+		`for d in /home/u/sb/a; do cd "$d"; rm -rf *; done`,
+		`for d in /home/u/sb/a; do cd $d/; rm -rf *; done`,
+		`while read d; do cd $d; rm -rf *; done < /dev/null`,
+	} {
+		if validateRm(t, command).IsValid {
+			t.Errorf("должно отклоняться: %q", command)
+		}
+	}
+}
+
+// TestRmGuardCdGlobReason причина ведёт к литеральному абсолютному пути
+func TestRmGuardCdGlobReason(t *testing.T) {
+	r := validateRm(t, `cd /home/u/sb && rm -f cl/* && ls cl`)
+	if r.IsValid {
+		t.Fatal("должно отклоняться")
+	}
+	if !strings.Contains(r.Violations[0].Message, "после cd") {
+		t.Errorf("заголовок: %q", r.Violations[0].Message)
+	}
+	want := "`rm -f cl/*`: после cd каталог глоба cl/* заранее не известен, укажи литеральный абсолютный путь: `rm -f /полный/путь/cl/*`"
+	if got := strings.Join(r.Suggestions, "\n"); got != want {
+		t.Errorf("\nесть  %q\nждали %q", got, want)
+	}
+}
