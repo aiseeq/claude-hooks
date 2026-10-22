@@ -33,11 +33,11 @@ func readSnapshot(t *testing.T, path string) limitsSnapshot {
 
 func merge(t *testing.T, path string, used float64, resets time.Time, session string, now time.Time) (weeklyUsage, weekVerdict) {
 	t.Helper()
-	merged, verdict, err := mergeWeeklyLimit(path, weeklyUsage{used: used, resetsAt: resets}, session, now)
+	res, err := mergeLimits(path, sample{week: &weeklyUsage{used: used, resetsAt: resets}, session: session}, now)
 	if err != nil {
 		t.Fatal(err)
 	}
-	return merged, verdict
+	return res.merged, res.verdict
 }
 
 func TestMergeWeeklyLimitFirstSnapshot(t *testing.T) {
@@ -176,7 +176,7 @@ func TestWriteLimitsTwoAccounts(t *testing.T) {
 	if err := WriteLimits(&out, true); err != nil {
 		t.Fatal(err)
 	}
-	if rows := strings.Split(strings.TrimSpace(out.String()), "\n"); len(rows) != 3 || !strings.HasSuffix(rows[1], "\t61\twork") {
+	if rows := strings.Split(strings.TrimSpace(out.String()), "\n"); len(rows) != 3 || !strings.HasSuffix(rows[1], "\t61\twork\t") {
 		t.Errorf("журнал шагов:\n%s", out.String())
 	}
 }
@@ -219,7 +219,7 @@ func TestMergeWeeklyLimitConcurrent(t *testing.T) {
 		wg.Add(1)
 		go func(used float64) {
 			defer wg.Done()
-			if _, _, err := mergeWeeklyLimit(path, weeklyUsage{used: used, resetsAt: workResets}, "s", now); err != nil {
+			if _, err := mergeLimits(path, sample{week: &weeklyUsage{used: used, resetsAt: workResets}, session: "s"}, now); err != nil {
 				errs <- err
 			}
 		}(float64(i))
@@ -283,10 +283,7 @@ func TestWeeklyUsageRequiresBothValues(t *testing.T) {
 
 // Сессия со старым ответом API рисует свежую долю своей недели, а не свою
 func TestRenderStaleSessionShowsRecordedWeek(t *testing.T) {
-	t.Setenv("XDG_STATE_HOME", t.TempDir())
-	t.Setenv("XDG_RUNTIME_DIR", t.TempDir())
-	t.Setenv("KONSOLE_DBUS_SERVICE", "")
-	t.Setenv("KONSOLE_DBUS_SESSION", "")
+	isolateRender(t)
 	resets := time.Now().Add(5 * 24 * time.Hour).Truncate(time.Hour).Unix()
 	render := func(session string, used int) string {
 		t.Helper()

@@ -130,7 +130,7 @@ func TestDetails(t *testing.T) {
 	input.Cost.LinesAdded = 412
 	input.Cost.LinesRemoved = 87
 
-	parts := details(input, GitStatus{IsRepo: true, Branch: "main", Counted: true}, time.Now())
+	parts := details(input, GitStatus{IsRepo: true, Branch: "main", Counted: true}, "нед", time.Now())
 
 	expected := []string{"main", "Opus 5·high", "ctx ▓▓▓▓░░░░░░ 47%", "+412 −87"}
 	if len(parts) != len(expected) {
@@ -164,7 +164,7 @@ func TestBuildFitsSingleLine(t *testing.T) {
 	input.Model.DisplayName = "Opus 5 (1M context)"
 	input.ContextWindow.UsedPercentage = 47
 
-	line, title := build(context.Background(), input, time.Now(), testLogger(t))
+	line, title := build(context.Background(), input, "нед", time.Now(), testLogger(t))
 
 	if strings.Contains(line, "\n") {
 		t.Errorf("строка статуса должна умещаться в одну строку: %q", line)
@@ -179,7 +179,7 @@ func TestBuildFitsSingleLine(t *testing.T) {
 
 func TestDetailsSkipsMissingData(t *testing.T) {
 	// Claude Code передаёт не все поля: пустые сведения не должны давать пустых разделителей
-	if parts := details(Input{}, GitStatus{}, time.Now()); len(parts) != 0 {
+	if parts := details(Input{}, GitStatus{}, "нед", time.Now()); len(parts) != 0 {
 		t.Errorf("ожидался пустой список, получено %q", parts)
 	}
 }
@@ -271,7 +271,7 @@ func TestWeeklyBar(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got := weeklyBar(weeklyUsage{used: tt.used, resetsAt: weekResets}, tt.now)
+			got := weeklyBar("нед", weeklyUsage{used: tt.used, resetsAt: weekResets}, tt.now)
 			if plain(got) != tt.expected {
 				t.Errorf("получено %q, ожидалось %q", plain(got), tt.expected)
 			}
@@ -311,7 +311,7 @@ func TestDetailsWeekly(t *testing.T) {
 	input := Input{}
 	input.ContextWindow.UsedPercentage = 47
 	input.RateLimits.SevenDay = &WeeklyLimit{UsedPercentage: &used, ResetsAt: &resets}
-	parts := details(input, GitStatus{}, now)
+	parts := details(input, GitStatus{}, "нед", now)
 	expected := []string{"ctx ▓▓▓▓░░░░░░ 47%", "нед ▓▓▓▓▓░░░░░ 51% ▲"}
 	if len(parts) != len(expected) {
 		t.Fatalf("ожидалось %q, получено %q", expected, parts)
@@ -329,7 +329,7 @@ func TestDetailsWeekly(t *testing.T) {
 		"нет процента":  {ResetsAt: &resets},
 	} {
 		input.RateLimits.SevenDay = limit
-		for _, part := range details(input, GitStatus{}, now) {
+		for _, part := range details(input, GitStatus{}, "нед", now) {
 			if strings.Contains(plain(part), "нед") {
 				t.Errorf("%s: блок недели не должен выводиться, получено %q", name, plain(part))
 			}

@@ -70,6 +70,7 @@ func execute() int {
 		newNotifyCmd(),
 		newStatusLineCmd(),
 		newLimitsCmd(),
+		newAccountCmd(),
 		newConfigCmd(),
 		newVersionCmd(),
 		newStyleCmd(&exitCode),
@@ -608,10 +609,11 @@ func newLimitsCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "limits",
 		Short: "Показать неделю Claude по каждой учётке",
-		Long: `Печатает недельный лимит из снимка строки статуса
-(~/.local/state/claude-hooks/limits.json): по строке на учётку - сброс недели,
-доля, когда доля до неё дошла и когда её последний раз видела строка статуса.
-Учётка узнаётся по сбросу недели: на входе строки статуса её нет.
+		Long: `Печатает лимиты из снимка строки статуса
+(~/.local/state/claude-hooks/limits.json) по каждой учётке хранилища
+(claude-hooks account): почта, неделя - доля и сброс, пять часов, срок входа.
+Неделя приписывается учётке, активной в момент замера; недели без учётки
+(до хранилища) - строками без почты, по сбросу недели.
 
 С --steps печатает журнал шагов (limits-history.jsonl) таблицей с табуляцией:
 момент, когда доля впервые дошла до значения, - по нему считается цена процента.`,

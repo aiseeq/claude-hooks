@@ -88,7 +88,10 @@ func scanModelFile(ctx context.Context, root, path string, validator *ModelGuard
 	}
 	defer f.Close()
 	reader := bufio.NewReaderSize(f, 64*1024)
-	project := transcriptProject(root, path)
+	project, err := transcriptProject(root, path)
+	if err != nil {
+		return err
+	}
 	for {
 		if err := ctx.Err(); err != nil {
 			return err
@@ -249,10 +252,10 @@ func WriteModelScan(w io.Writer, result *ModelScanResult) {
 
 // transcriptProject имя папки проекта: первый каталог под корнем транскриптов,
 // у суб-агентов (<проект>/<сессия>/subagents/x.jsonl) тоже он, а не id сессии
-func transcriptProject(root, path string) string {
+func transcriptProject(root, path string) (string, error) {
 	rel, err := filepath.Rel(root, path)
 	if err != nil {
-		return filepath.Base(filepath.Dir(path))
+		return "", fmt.Errorf("transcript %s is not under %s: %w", path, root, err)
 	}
-	return strings.SplitN(filepath.ToSlash(rel), "/", 2)[0]
+	return strings.SplitN(filepath.ToSlash(rel), "/", 2)[0], nil
 }

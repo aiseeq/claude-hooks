@@ -11,6 +11,8 @@ import (
 	"path/filepath"
 	"syscall"
 	"time"
+
+	"github.com/aiseeq/claude-hooks/internal/accounts"
 )
 
 // WeeklyLimit — доля недельного лимита подписки, как её отдаёт Claude Code
@@ -57,15 +59,19 @@ func (w weeklyUsage) limit() *WeeklyLimit {
 // Верхние поля — неделя, доля которой выросла последней: учётка, что тратит
 // сейчас. Их форма прежняя, чтобы читатели снимка не менялись
 type limitsSnapshot struct {
-	At       time.Time    `json:"at"`
-	SevenDay float64      `json:"sevenDayUsedPercentage"`
-	ResetsAt time.Time    `json:"sevenDayResetsAt"`
-	Weeks    []weekRecord `json:"weeks"`
+	At        time.Time    `json:"at"`
+	SevenDay  float64      `json:"sevenDayUsedPercentage"`
+	ResetsAt  time.Time    `json:"sevenDayResetsAt"`
+	Weeks     []weekRecord `json:"weeks"`
+	FiveHours []fiveRecord `json:"fiveHours,omitempty"`
 }
 
 // weekRecord — неделя одной учётки. At — когда доля впервые дошла до
 // SevenDay: по этим моментам считается цена процента. SeenAt — последняя
 // отрисовка, подтвердившая долю. Session — сессия, первой увидевшая долю.
+// Account — почта учётки (хранилище accounts): неделя, которой снимок ещё не
+// видел, отходит учётке, чьи токены в этот момент у Claude Code. Пусто —
+// учётка не опознана (снимок до хранилища учёток).
 // Времена — с точностью до секунды (RFC 3339, как в прежнем снимке)
 type weekRecord struct {
 	ResetsAt time.Time `json:"sevenDayResetsAt"`
@@ -73,6 +79,15 @@ type weekRecord struct {
 	At       time.Time `json:"at"`
 	SeenAt   time.Time `json:"seenAt"`
 	Session  string    `json:"session,omitempty"`
+	Account  string    `json:"account,omitempty"`
+}
+
+// fiveRecord — пятичасовое окно учётки: последнее известное
+type fiveRecord struct {
+	Account  string    `json:"account"`
+	ResetsAt time.Time `json:"resetsAt"`
+	Used     float64   `json:"usedPercentage"`
+	SeenAt   time.Time `json:"seenAt"`
 }
 
 // limitStep — строка журнала: доля недели выросла или началась новая неделя
@@ -81,6 +96,32 @@ type limitStep struct {
 	ResetsAt time.Time `json:"sevenDayResetsAt"`
 	SevenDay float64   `json:"sevenDayUsedPercentage"`
 	Session  string    `json:"session,omitempty"`
+	Account  string    `json:"account,omitempty"`
+}
+
+// sample — замер одной отрисовки или одного ответа API
+type sample struct {
+	// week — неделя; nil — недели в замере нет (учётка ещё не тратила)
+	week *weeklyUsage
+	// five — пятичасовое окно; nil — нет
+	five    *weeklyUsage
+	session string
+	// account — для строки статуса учётка, чьи токены сейчас у Claude Code:
+	// ей отходит неделя, которой снимок ещё не видел. Для замера API —
+	// учётка, чьим токеном он сделан
+	account string
+	// exact — учётка замера известна точно (замер API), а не выведена
+	exact bool
+}
+
+// mergeResult — итог сведения замера
+type mergeResult struct {
+	// merged — свежайшая известная доля недели замера
+	merged  weeklyUsage
+	verdict weekVerdict
+	// owner — учётка недели замера, пусто — не опознана
+	owner    string
+	snapshot *limitsSnapshot
 }
 
 // weekVerdict — что отрисовка сделала с записью недели
@@ -115,46 +156,50 @@ func limitsHistory(snapshot string) string {
 	return filepath.Join(filepath.Dir(snapshot), "limits-history.jsonl")
 }
 
-// recordWeeklyLimit сводит замер сессии со снимком по пути из LimitsFile и
-// возвращает свежайшую известную долю той же недели
-func recordWeeklyLimit(week weeklyUsage, session string, now time.Time) (weeklyUsage, weekVerdict, error) {
+// recordLimits сводит замер со снимком по пути из LimitsFile
+func recordLimits(smp sample, now time.Time) (mergeResult, error) {
 	path, err := LimitsFile()
 	if err != nil {
-		return week, weekRaised, err
+		return mergeResult{verdict: weekRaised}, err
 	}
-	return mergeWeeklyLimit(path, week, session, now)
+	return mergeLimits(path, smp, now)
 }
 
-// mergeWeeklyLimit сводит замер со снимком под блокировкой: сессии рисуются
+// mergeLimits сводит замер со снимком под блокировкой: сессии рисуются
 // одновременно, и без неё одна затирала бы выросшую долю другой
-func mergeWeeklyLimit(path string, week weeklyUsage, session string, now time.Time) (weeklyUsage, weekVerdict, error) {
+func mergeLimits(path string, smp sample, now time.Time) (mergeResult, error) {
+	res := mergeResult{verdict: weekRaised}
+	if smp.week != nil {
+		res.merged = *smp.week
+	}
 	dir := filepath.Dir(path)
 	if err := os.MkdirAll(dir, 0o755); err != nil {
-		return week, weekRaised, fmt.Errorf("cannot create the limits directory: %w", err)
+		return res, fmt.Errorf("cannot create the limits directory: %w", err)
 	}
 	unlock, err := lockFile(filepath.Join(dir, ".limits.lock"))
 	if err != nil {
-		return week, weekRaised, err
+		return res, err
 	}
 	defer unlock()
 
 	snapshot, err := loadLimits(path)
 	if err != nil {
-		return week, weekRaised, err
+		return res, err
 	}
-	merged, verdict := snapshot.merge(week, session, now)
-	if verdict == weekRaised {
-		step := limitStep{At: now.Truncate(time.Second), ResetsAt: merged.resetsAt, SevenDay: merged.used, Session: session}
+	res = snapshot.merge(smp, now)
+	res.snapshot = snapshot
+	if smp.week != nil && res.verdict == weekRaised {
+		step := limitStep{At: now.Truncate(time.Second), ResetsAt: res.merged.resetsAt, SevenDay: res.merged.used, Session: smp.session, Account: res.owner}
 		if err := appendStep(limitsHistory(path), step); err != nil {
-			return merged, verdict, err
+			return res, err
 		}
 	}
-	return merged, verdict, saveLimits(path, snapshot)
+	return res, saveLimits(path, snapshot)
 }
 
-// merge вносит замер в неделю его сброса, убирает прошедшие недели и
-// пересчитывает верхние поля
-func (s *limitsSnapshot) merge(week weeklyUsage, session string, now time.Time) (weeklyUsage, weekVerdict) {
+// merge вносит замер в неделю его сброса и пятичасовое окно его учётки,
+// убирает прошедшие окна и пересчитывает верхние поля
+func (s *limitsSnapshot) merge(smp sample, now time.Time) mergeResult {
 	stamp := now.Truncate(time.Second)
 	kept := s.Weeks[:0]
 	for _, rec := range s.Weeks {
@@ -163,38 +208,90 @@ func (s *limitsSnapshot) merge(week weeklyUsage, session string, now time.Time) 
 		}
 	}
 	s.Weeks = kept
+	keptFive := s.FiveHours[:0]
+	for _, rec := range s.FiveHours {
+		if rec.ResetsAt.After(now) {
+			keptFive = append(keptFive, rec)
+		}
+	}
+	s.FiveHours = keptFive
 
-	merged, verdict := week, weekRaised
-	found := false
-	for i := range s.Weeks {
-		rec := &s.Weeks[i]
+	res := mergeResult{verdict: weekRaised, owner: smp.account}
+	if smp.week != nil {
+		res.merged, res.verdict, res.owner = s.mergeWeek(*smp.week, smp, stamp)
+		s.pickLatest()
+	}
+	if smp.five != nil && res.owner != "" {
+		s.mergeFive(res.owner, *smp.five, stamp)
+	}
+	return res
+}
+
+// mergeWeek вносит неделю. Неделя ищется по сбросу: у учёток разные недели.
+// Совпал сброс у двух учёток — берётся запись учётки замера. Возвращает
+// свежайшую долю недели, вердикт и учётку недели
+func (s *limitsSnapshot) mergeWeek(week weeklyUsage, smp sample, stamp time.Time) (weeklyUsage, weekVerdict, string) {
+	idx := -1
+	for i, rec := range s.Weeks {
 		if !rec.ResetsAt.Equal(week.resetsAt) {
 			continue
 		}
-		found = true
-		switch {
-		case week.used > rec.SevenDay:
-			rec.SevenDay, rec.At, rec.SeenAt, rec.Session = week.used, stamp, stamp, session
-		case week.used == rec.SevenDay:
-			rec.SeenAt = stamp
-			verdict = weekConfirmed
-		default:
-			merged.used = rec.SevenDay
-			verdict = weekStale
+		if smp.exact && rec.Account != smp.account && rec.Account != "" {
+			continue
 		}
-		break
+		if idx < 0 || rec.Account == smp.account {
+			idx = i
+		}
 	}
-	if !found {
+	if idx < 0 {
 		s.Weeks = append(s.Weeks, weekRecord{
 			ResetsAt: week.resetsAt,
 			SevenDay: week.used,
 			At:       stamp,
 			SeenAt:   stamp,
-			Session:  session,
+			Session:  smp.session,
+			Account:  smp.account,
 		})
+		return week, weekRaised, smp.account
 	}
-	s.pickLatest()
-	return merged, verdict
+	rec := &s.Weeks[idx]
+	if rec.Account == "" {
+		// Неделя из снимка до хранилища учёток: её тратила учётка, что и
+		// сейчас у Claude Code (при установке была одна неделя одной учётки)
+		rec.Account = smp.account
+	}
+	merged := week
+	verdict := weekRaised
+	switch {
+	case week.used > rec.SevenDay:
+		rec.SevenDay, rec.At, rec.SeenAt, rec.Session = week.used, stamp, stamp, smp.session
+	case week.used == rec.SevenDay:
+		rec.SeenAt = stamp
+		verdict = weekConfirmed
+	default:
+		merged.used = rec.SevenDay
+		verdict = weekStale
+	}
+	return merged, verdict, rec.Account
+}
+
+// mergeFive вносит пятичасовое окно учётки: внутри окна доля только растёт,
+// окно с более поздним сбросом сменяет прежнее, более раннее — старый ответ
+func (s *limitsSnapshot) mergeFive(account string, five weeklyUsage, stamp time.Time) {
+	for i := range s.FiveHours {
+		rec := &s.FiveHours[i]
+		if rec.Account != account {
+			continue
+		}
+		switch {
+		case five.resetsAt.After(rec.ResetsAt):
+			rec.ResetsAt, rec.Used, rec.SeenAt = five.resetsAt, five.used, stamp
+		case five.resetsAt.Equal(rec.ResetsAt):
+			rec.Used, rec.SeenAt = max(rec.Used, five.used), stamp
+		}
+		return
+	}
+	s.FiveHours = append(s.FiveHours, fiveRecord{Account: account, ResetsAt: five.resetsAt, Used: five.used, SeenAt: stamp})
 }
 
 // pickLatest ставит в верхние поля неделю с последним ростом доли
@@ -227,9 +324,9 @@ func loadLimits(path string) (*limitsSnapshot, error) {
 	return &s, nil
 }
 
-// ReadLimits читает снимок для сводки: все недели и журнал шагов
-func ReadLimits() (path string, weeks []weekRecord, steps []limitStep, err error) {
-	path, err = LimitsFile()
+// readLimits читает снимок для сводки: снимок и журнал шагов
+func readLimits() (string, *limitsSnapshot, []limitStep, error) {
+	path, err := LimitsFile()
 	if err != nil {
 		return "", nil, nil, err
 	}
@@ -237,13 +334,13 @@ func ReadLimits() (path string, weeks []weekRecord, steps []limitStep, err error
 }
 
 // readLimitsAt читает снимок и журнал по пути снимка
-func readLimitsAt(path string) (string, []weekRecord, []limitStep, error) {
+func readLimitsAt(path string) (string, *limitsSnapshot, []limitStep, error) {
 	snapshot, err := loadLimits(path)
 	if err != nil {
 		return path, nil, nil, err
 	}
 	steps, err := readSteps(limitsHistory(path))
-	return path, snapshot.Weeks, steps, err
+	return path, snapshot, steps, err
 }
 
 // saveLimits записывает снимок атомарно: страница может читать файл
@@ -334,45 +431,111 @@ func lockFile(path string) (func(), error) {
 	}, nil
 }
 
-// weekdays — короткие имена дней недели для сводки
-var weekdays = [...]string{"вс", "пн", "вт", "ср", "чт", "пт", "сб"}
-
-// shortTime пишет время местным: «пн 26.10 11:00»
-func shortTime(at time.Time) string {
-	at = at.Local()
-	return weekdays[at.Weekday()] + " " + at.Format("02.01 15:04")
-}
-
-// WriteLimits печатает сводку для мастеров и калибровки: неделю каждой
-// учётки и, при steps, журнал шагов одной таблицей с табуляцией
+// WriteLimits печатает сводку для мастеров и калибровки: учётки хранилища
+// по почте с неделей, пятью часами и сроком входа, неопознанные недели по
+// сбросу, а при steps — журнал шагов одной таблицей с табуляцией
 func WriteLimits(w io.Writer, steps bool) error {
-	path, weeks, journal, err := ReadLimits()
+	path, snapshot, journal, err := readLimits()
 	if err != nil {
 		return err
 	}
 	if steps {
-		fmt.Fprintln(w, "at\tsevenDayResetsAt\tsevenDayUsedPercentage\tsession")
+		fmt.Fprintln(w, "at\tsevenDayResetsAt\tsevenDayUsedPercentage\tsession\taccount")
 		for _, step := range journal {
-			fmt.Fprintf(w, "%s\t%s\t%g\t%s\n", step.At.Format(time.RFC3339), step.ResetsAt.Format(time.RFC3339), step.SevenDay, step.Session)
+			fmt.Fprintf(w, "%s\t%s\t%g\t%s\t%s\n", step.At.Format(time.RFC3339), step.ResetsAt.Format(time.RFC3339), step.SevenDay, step.Session, step.Account)
 		}
 		return nil
 	}
-	if len(weeks) == 0 {
+	paths, err := accounts.DefaultPaths()
+	if err != nil {
+		return err
+	}
+	store, err := accounts.Load(paths)
+	if err != nil {
+		return err
+	}
+	now := time.Now()
+	infos := store.Infos()
+	weeks := snapshot.Weeks
+	if len(weeks) == 0 && len(infos) == 0 {
 		fmt.Fprintf(w, "Замеров недели нет: %s пуст или его нет\n", path)
 		return nil
 	}
 	latest := latestWeek(weeks)
-	fmt.Fprintf(w, "Неделя Claude по учёткам, учётка — свой сброс недели (%s):\n", path)
+	shown := map[int]bool{}
+	if len(infos) > 0 {
+		fmt.Fprintf(w, "Подписки Claude (%s, %s):\n", paths.Store(), path)
+		for _, info := range infos {
+			writeAccount(w, info, snapshot, shown, now)
+		}
+		auto := "включено"
+		if store.AutoOff {
+			auto = "выключено (claude-hooks account auto on)"
+		}
+		fmt.Fprintf(w, "Автопереключение: %s; учётка пуста с %d%% недели или %d%% пяти часов, из непустых — ближайший сброс недели\n",
+			auto, accounts.WeekEmptyPercent, accounts.FiveHourEmptyPercent)
+	}
+	unknown := false
 	for i, rec := range weeks {
+		if shown[i] {
+			continue
+		}
+		if !unknown {
+			if len(infos) > 0 {
+				fmt.Fprintln(w, "Недели неопознанных учёток (по сбросу):")
+			} else {
+				fmt.Fprintf(w, "Неделя Claude по учёткам, учётка — свой сброс недели (%s):\n", path)
+			}
+			unknown = true
+		}
 		mark := ""
 		if i == latest {
 			mark = "  ← тратит сейчас"
 		}
 		fmt.Fprintf(w, "сброс %s  %g%%  с %s, видно %s%s\n",
-			shortTime(rec.ResetsAt), rec.SevenDay, shortTime(rec.At), shortTime(rec.SeenAt), mark)
+			accounts.ShortTime(rec.ResetsAt), rec.SevenDay, accounts.ShortTime(rec.At), accounts.ShortTime(rec.SeenAt), mark)
 	}
 	fmt.Fprintf(w, "Шагов в журнале: %d (claude-hooks limits --steps)\n", len(journal))
 	return nil
+}
+
+// writeAccount печатает учётку: почта, неделя, пять часов, срок входа
+func writeAccount(w io.Writer, info accounts.Info, snapshot *limitsSnapshot, shown map[int]bool, now time.Time) {
+	mark := ""
+	if info.Active {
+		mark = "  ← сейчас у Claude Code"
+	}
+	fmt.Fprintf(w, "%s%s\n", info.Email, mark)
+	week := -1
+	for i, rec := range snapshot.Weeks {
+		if rec.Account == info.Email && (week < 0 || rec.ResetsAt.After(snapshot.Weeks[week].ResetsAt)) {
+			week = i
+		}
+	}
+	if week >= 0 {
+		rec := snapshot.Weeks[week]
+		shown[week] = true
+		fmt.Fprintf(w, "  неделя %g%%, сброс %s (доля с %s, видно %s)\n",
+			rec.SevenDay, accounts.ShortTime(rec.ResetsAt), accounts.ShortTime(rec.At), accounts.ShortTime(rec.SeenAt))
+	} else {
+		fmt.Fprintln(w, "  неделя неизвестна или не начата")
+	}
+	for _, rec := range snapshot.FiveHours {
+		if rec.Account == info.Email && rec.ResetsAt.After(now) {
+			fmt.Fprintf(w, "  пять часов %g%%, сброс %s\n", rec.Used, accounts.ShortTime(rec.ResetsAt))
+		}
+	}
+	switch {
+	case info.Dead != "":
+		fmt.Fprintf(w, "  вход мёртв: %s\n", info.Dead)
+	case !info.LoginExpires.IsZero():
+		left := info.LoginExpires.Sub(now)
+		note := ""
+		if left < 3*24*time.Hour {
+			note = " — скоро /login"
+		}
+		fmt.Fprintf(w, "  вход до %s%s\n", accounts.ShortTime(info.LoginExpires), note)
+	}
 }
 
 // latestWeek — номер недели с последним ростом доли, -1 без недель
@@ -384,4 +547,63 @@ func latestWeek(weeks []weekRecord) int {
 		}
 	}
 	return latest
+}
+
+// accountUsage — расход учёток по снимку: свежайшая неделя и пять часов
+// каждой опознанной учётки
+func accountUsage(s *limitsSnapshot, now time.Time) map[string]accounts.Usage {
+	out := map[string]accounts.Usage{}
+	for _, rec := range s.Weeks {
+		if rec.Account == "" || !rec.ResetsAt.After(now) {
+			continue
+		}
+		u := out[rec.Account]
+		if rec.ResetsAt.After(u.Week.ResetsAt) {
+			u.Email, u.Week = rec.Account, accounts.Window{Used: rec.SevenDay, ResetsAt: rec.ResetsAt}
+		}
+		out[rec.Account] = u
+	}
+	for _, rec := range s.FiveHours {
+		if rec.Account == "" || !rec.ResetsAt.After(now) {
+			continue
+		}
+		u := out[rec.Account]
+		u.Email, u.FiveHour = rec.Account, accounts.Window{Used: rec.Used, ResetsAt: rec.ResetsAt}
+		out[rec.Account] = u
+	}
+	return out
+}
+
+// SnapshotLimits — снимок строки статуса для ротации учёток: расход учёток
+// и запись расхода, спрошенного у API
+type SnapshotLimits struct{}
+
+// Usage читает расход учёток из снимка
+func (SnapshotLimits) Usage() (map[string]accounts.Usage, error) {
+	path, err := LimitsFile()
+	if err != nil {
+		return nil, err
+	}
+	snapshot, err := loadLimits(path)
+	if err != nil {
+		return nil, err
+	}
+	return accountUsage(snapshot, time.Now()), nil
+}
+
+// Record вписывает расход учётки, спрошенный у API её токеном: учётка
+// известна точно. Окно без сброса (неделя не начата) не пишется
+func (SnapshotLimits) Record(email string, week, fiveHour accounts.Window, now time.Time) error {
+	smp := sample{session: "api", account: email, exact: true}
+	if !week.ResetsAt.IsZero() {
+		smp.week = &weeklyUsage{used: week.Used, resetsAt: week.ResetsAt}
+	}
+	if !fiveHour.ResetsAt.IsZero() {
+		smp.five = &weeklyUsage{used: fiveHour.Used, resetsAt: fiveHour.ResetsAt}
+	}
+	if smp.week == nil && smp.five == nil {
+		return nil
+	}
+	_, err := recordLimits(smp, now)
+	return err
 }

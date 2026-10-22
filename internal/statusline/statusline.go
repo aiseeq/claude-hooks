@@ -9,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/aiseeq/claude-hooks/internal/accounts"
 	"github.com/aiseeq/claude-hooks/internal/core"
 	"github.com/aiseeq/claude-hooks/internal/desktop"
 )
@@ -77,6 +78,7 @@ type Input struct {
 
 	RateLimits struct {
 		SevenDay *WeeklyLimit `json:"seven_day"`
+		FiveHour *WeeklyLimit `json:"five_hour"`
 	} `json:"rate_limits"`
 }
 
@@ -95,26 +97,42 @@ func Render(ctx context.Context, stdin io.Reader, logger core.Logger) (string, e
 	}
 
 	now := time.Now()
+	store, paths := loadAccounts(logger)
+	owner := ""
+	var snapshot *limitsSnapshot
 	limit := input.RateLimits.SevenDay
 	if week, ok := limit.usage(); ok {
-		merged, verdict, err := recordWeeklyLimit(week, input.SessionID, now)
+		smp := sample{week: &week, session: input.SessionID, account: store.ActiveEmail()}
+		if five, ok := input.RateLimits.FiveHour.usage(); ok {
+			smp.five = &five
+		}
+		res, err := recordLimits(smp, now)
 		switch {
 		case err != nil:
 			// Явный failover: снимок не сведён, полоса рисуется по доле самой сессии
 			logger.Warn("weekly limit not saved, showing the session one", "error", err)
-		case verdict == weekStale:
+		case res.verdict == weekStale:
 			// Полоса показывает свежайшую долю своей недели: своя доля
 			// сессии — из её последнего ответа API, он мог быть часы назад
 			logger.Info("stale weekly limit, showing the recorded one", "session", input.SessionID,
-				"session_used", week.used, "recorded_used", merged.used, "resets_at", week.resetsAt.Format(time.RFC3339))
-			input.RateLimits.SevenDay = merged.limit()
+				"session_used", week.used, "recorded_used", res.merged.used, "resets_at", week.resetsAt.Format(time.RFC3339))
+			input.RateLimits.SevenDay = res.merged.limit()
 		}
+		owner, snapshot = res.owner, res.snapshot
 	} else if limit != nil {
 		logger.Warn("weekly limit incomplete or invalid, not shown",
 			"has_used_percentage", limit.UsedPercentage != nil, "has_resets_at", limit.ResetsAt != nil)
 	}
+	if store != nil {
+		rotate(paths, store, snapshot, now, logger)
+	}
+	weekLabel := "нед"
+	if store != nil && len(store.Accounts) > 1 && owner != "" {
+		// Учёток несколько: полоса называет, чья неделя
+		weekLabel += "·" + strings.SplitN(owner, "@", 2)[0]
+	}
 
-	line, title := build(ctx, input, now, logger)
+	line, title := build(ctx, input, weekLabel, now, logger)
 	if err := desktop.SetTerminalTitle(title); err != nil {
 		logger.Warn("terminal title not set", "error", err)
 	}
@@ -125,7 +143,7 @@ func Render(ctx context.Context, stdin io.Reader, logger core.Logger) (string, e
 // build собирает строку статуса и заголовок окна. Сбои источников (состояние
 // сессии, git) строку не срывают: она рисуется по тому, что удалось прочитать,
 // а сбой уходит в лог
-func build(ctx context.Context, input Input, now time.Time, logger core.Logger) (string, string) {
+func build(ctx context.Context, input Input, weekLabel string, now time.Time, logger core.Logger) (string, string) {
 	dir := sessionDir(input)
 	state, err := core.LoadSessionState(input.SessionID)
 	if err != nil {
@@ -151,7 +169,7 @@ func build(ctx context.Context, input Input, now time.Time, logger core.Logger) 
 		output.WriteString(dim + " ⑂" + worktree + reset)
 	}
 
-	for _, part := range details(input, git, now) {
+	for _, part := range details(input, git, weekLabel, now) {
 		output.WriteString(dim + " · " + reset + part)
 	}
 
@@ -191,7 +209,7 @@ func projectBadge(dir string, state core.SessionState, contextUsed float64) stri
 }
 
 // details собирает вторую строку из доступных сведений
-func details(input Input, git GitStatus, now time.Time) []string {
+func details(input Input, git GitStatus, weekLabel string, now time.Time) []string {
 	var parts []string
 
 	if git.IsRepo {
@@ -210,7 +228,7 @@ func details(input Input, git GitStatus, now time.Time) []string {
 	}
 
 	if week, ok := input.RateLimits.SevenDay.usage(); ok {
-		parts = append(parts, weeklyBar(week, now))
+		parts = append(parts, weeklyBar(weekLabel, week, now))
 	}
 
 	if added, removed := input.Cost.LinesAdded, input.Cost.LinesRemoved; added > 0 || removed > 0 {
@@ -279,14 +297,14 @@ func contextBar(used float64) string {
 
 // weeklyBar рисует долю недельного лимита. Цвет — по прогнозу на сброс,
 // ▲ — запаса почти нет или лимит кончится
-func weeklyBar(week weeklyUsage, now time.Time) string {
+func weeklyBar(label string, week weeklyUsage, now time.Time) string {
 	switch weeklyPace(week, now) {
 	case paceOver:
-		return meter("нед", week.used, red, " ▲")
+		return meter(label, week.used, red, " ▲")
 	case paceNear:
-		return meter("нед", week.used, yellow, " ▲")
+		return meter(label, week.used, yellow, " ▲")
 	default:
-		return meter("нед", week.used, green, "")
+		return meter(label, week.used, green, "")
 	}
 }
 
@@ -373,4 +391,55 @@ func firstDir(candidates ...string) string {
 		return wd
 	}
 	return "."
+}
+
+// loadAccounts читает хранилище учёток. Сбой не срывает строку статуса:
+// неделя пишется без учётки, ротации нет
+func loadAccounts(logger core.Logger) (*accounts.Store, accounts.Paths) {
+	paths, err := accounts.DefaultPaths()
+	if err != nil {
+		logger.Warn("accounts paths unavailable, no rotation", "error", err)
+		return nil, paths
+	}
+	store, err := accounts.Load(paths)
+	if err != nil {
+		logger.Warn("accounts store unreadable, no rotation", "error", err)
+		return nil, paths
+	}
+	return store, paths
+}
+
+// rotateArgs — подкоманда фоновой ротации учёток
+var rotateArgs = []string{"account", "rotate"}
+
+// startRotation запускает фоновую ротацию; тесты подменяют его, чтобы не
+// запускать свой бинарь
+var startRotation = accounts.MaybeRotate
+
+// rotate запускает фоновую ротацию учёток, если ей есть работа. Снимок из
+// отрисовки, а без замера недели — с диска
+func rotate(paths accounts.Paths, store *accounts.Store, snapshot *limitsSnapshot, now time.Time, logger core.Logger) {
+	var usage map[string]accounts.Usage
+	if snapshot != nil {
+		usage = accountUsage(snapshot, now)
+	} else {
+		var err error
+		if usage, err = (SnapshotLimits{}).Usage(); err != nil {
+			logger.Warn("limits snapshot unreadable, no rotation", "error", err)
+			return
+		}
+	}
+	executable, err := os.Executable()
+	if err != nil {
+		logger.Warn("own executable unknown, no rotation", "error", err)
+		return
+	}
+	why, err := startRotation(paths, store, usage, now, executable, rotateArgs...)
+	if err != nil {
+		logger.Warn("account rotation not started", "error", err)
+		return
+	}
+	if why != "" {
+		logger.Info("account rotation started", "reason", why)
+	}
 }
