@@ -13,24 +13,3 @@ settings:
 categories:
   patterns:
     enabled: true
-    rules:
-      scattered-construction:
-        exceptions:
-          - file: "cmd/claude-hooks/main.go"
-            pattern: "cobra.Command"
-            reason: >-
-              Литералы cobra.Command — это таблица подкоманд CLI: у каждой свой
-              набор полей (Use, Short, Long, Hidden, RunE), общей функции сборки
-              у них быть не может.
-          - file: "cmd/claude-hooks/account.go"
-            pattern: "cobra.Command"
-            reason: >-
-              Подкоманды account — та же таблица подкоманд CLI, что в main.go.
-          - file: "cmd/claude-hooks/skillreload.go"
-            pattern: "cobra.Command"
-            reason: >-
-              Подкоманда skill-scan — та же таблица подкоманд CLI, что в main.go.
-          - file: "cmd/claude-hooks/questioncheck.go"
-            pattern: "cobra.Command"
-            reason: >-
-              Подкоманда question-bench — та же таблица подкоманд CLI, что в main.go.
