@@ -1,7 +1,6 @@
 package statusline
 
 import (
-	"context"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -65,7 +64,7 @@ func renderInput(t *testing.T, session string, week int, weekResets time.Time, f
 	t.Helper()
 	input := fmt.Sprintf(`{"session_id":%q,"cwd":%q,"rate_limits":{"seven_day":{"used_percentage":%d,"resets_at":%d},"five_hour":{"used_percentage":%d,"resets_at":%d}}}`,
 		session, t.TempDir(), week, weekResets.Unix(), five, fiveResets.Unix())
-	line, err := Render(context.Background(), strings.NewReader(input), testLogger(t))
+	line, err := Render(strings.NewReader(input), testLogger(t))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -311,7 +310,7 @@ func TestRenderWithoutRateLimitsShowsActiveWeek(t *testing.T) {
 	now := time.Now()
 	renderInput(t, "s", 96, now.Add(4*24*time.Hour).Truncate(time.Hour), 3, now.Add(time.Hour))
 	input := fmt.Sprintf(`{"session_id":"fresh","cwd":%q}`, t.TempDir())
-	line, err := Render(context.Background(), strings.NewReader(input), testLogger(t))
+	line, err := Render(strings.NewReader(input), testLogger(t))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -367,7 +366,7 @@ func renderRaw(t *testing.T, session string, week int, resets time.Time) string 
 	t.Helper()
 	input := fmt.Sprintf(`{"session_id":%q,"cwd":%q,"rate_limits":{"seven_day":{"used_percentage":%d,"resets_at":%d}}}`,
 		session, t.TempDir(), week, resets.Unix())
-	line, err := Render(context.Background(), strings.NewReader(input), testLogger(t))
+	line, err := Render(strings.NewReader(input), testLogger(t))
 	if err != nil {
 		t.Fatal(err)
 	}

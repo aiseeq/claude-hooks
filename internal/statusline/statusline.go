@@ -1,7 +1,6 @@
 package statusline
 
 import (
-	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -58,9 +57,8 @@ type Input struct {
 	} `json:"model"`
 
 	Workspace struct {
-		CurrentDir  string `json:"current_dir"`
-		ProjectDir  string `json:"project_dir"`
-		GitWorktree string `json:"git_worktree"`
+		CurrentDir string `json:"current_dir"`
+		ProjectDir string `json:"project_dir"`
 	} `json:"workspace"`
 
 	ContextWindow struct {
@@ -85,7 +83,7 @@ type Input struct {
 // Render читает данные Claude Code и возвращает строку статуса.
 // Попутно обновляется заголовок окна: строка статуса видна только в активном
 // окне, а по заголовку сессию видно в панели задач и в переключателе окон.
-func Render(ctx context.Context, stdin io.Reader, logger core.Logger) (string, error) {
+func Render(stdin io.Reader, logger core.Logger) (string, error) {
 	data, err := io.ReadAll(stdin)
 	if err != nil {
 		return "", fmt.Errorf("failed to read status line input: %w", err)
@@ -153,7 +151,7 @@ func Render(ctx context.Context, stdin io.Reader, logger core.Logger) (string, e
 		bar.pool = poolPace(store, snapshot, now, logger)
 	}
 
-	line, title := build(ctx, input, bar, now, logger)
+	line, title := build(input, bar, now, logger)
 	if err := desktop.SetTerminalTitle(title); err != nil {
 		logger.Warn("terminal title not set", "error", err)
 	}
@@ -161,10 +159,11 @@ func Render(ctx context.Context, stdin io.Reader, logger core.Logger) (string, e
 	return line, nil
 }
 
-// build собирает строку статуса и заголовок окна. Сбои источников (состояние
-// сессии, git) строку не срывают: она рисуется по тому, что удалось прочитать,
-// а сбой уходит в лог
-func build(ctx context.Context, input Input, bar weekBar, now time.Time, logger core.Logger) (string, string) {
+// build собирает строку статуса и заголовок окна. Сбой чтения состояния
+// сессии строку не срывает: она рисуется по тому, что удалось прочитать, а
+// сбой уходит в лог. Ветки и worktree в строке нет (пользователь 24.10 о
+// строке всех агентов: «Хочу видеть только вот это»)
+func build(input Input, bar weekBar, now time.Time, logger core.Logger) (string, string) {
 	dir := sessionDir(input)
 	state, err := core.LoadSessionState(input.SessionID)
 	if err != nil {
@@ -173,24 +172,13 @@ func build(ctx context.Context, input Input, bar weekBar, now time.Time, logger 
 		logger.Warn("session state unavailable", "session", input.SessionID, "error", err)
 		state = core.StateUnknown
 	}
-	repoDir := gitDir(input)
-	git, err := ReadGitStatus(ctx, repoDir)
-	if err != nil {
-		// Best effort: GitStatus сам говорит, что получено — без IsRepo ветки
-		// нет, без Counted вместо счётчиков рисуется «…»
-		logger.Warn("git status incomplete", "dir", repoDir, "error", err)
-	}
 
 	// Путь не показывается: плашка уже называет проект, а полный путь
 	// повторяет её и занимает место
 	var output strings.Builder
 	output.WriteString(projectBadge(dir, state, input.ContextWindow.UsedPercentage))
 
-	if worktree := input.Workspace.GitWorktree; worktree != "" {
-		output.WriteString(dim + " ⑂" + worktree + reset)
-	}
-
-	for _, part := range details(input, git, bar, now) {
+	for _, part := range details(input, bar, now) {
 		output.WriteString(dim + " · " + reset + part)
 	}
 
@@ -230,12 +218,8 @@ func projectBadge(dir string, state core.SessionState, contextUsed float64) stri
 }
 
 // details собирает вторую строку из доступных сведений
-func details(input Input, git GitStatus, bar weekBar, now time.Time) []string {
+func details(input Input, bar weekBar, now time.Time) []string {
 	var parts []string
-
-	if git.IsRepo {
-		parts = append(parts, gitSummary(git))
-	}
 
 	if model := shortModel(input.Model.DisplayName); model != "" {
 		if effort := input.Effort.Level; effort != "" {
@@ -266,42 +250,6 @@ func shortModel(model string) string {
 		model = model[:open]
 	}
 	return strings.TrimSpace(model)
-}
-
-// gitSummary описывает ветку, незакоммиченные изменения и расхождение с remote
-func gitSummary(git GitStatus) string {
-	if git.Detached {
-		summary := yellow + "⚠ " + git.Branch + reset
-		return summary + gitCounts(git)
-	}
-
-	switch {
-	case !git.Counted:
-		// git не успел посчитать изменения: ни «чисто», ни «есть правки»
-		// сказать нельзя, многоточие честнее зелёного
-		return git.Branch + dim + " …" + reset
-	case git.Changed == 0:
-		return green + git.Branch + reset + gitCounts(git)
-	default:
-		return yellow + git.Branch + reset + gitCounts(git)
-	}
-}
-
-// gitCounts описывает изменения и расхождение с remote
-func gitCounts(git GitStatus) string {
-	var summary string
-
-	if git.Changed > 0 {
-		summary += fmt.Sprintf("%s ●%d%s", yellow, git.Changed, reset)
-	}
-	if git.Ahead > 0 {
-		summary += fmt.Sprintf("%s ↑%d%s", cyan, git.Ahead, reset)
-	}
-	if git.Behind > 0 {
-		summary += fmt.Sprintf("%s ↓%d%s", red, git.Behind, reset)
-	}
-
-	return summary
 }
 
 // contextBar рисует полосу заполнения контекстного окна
@@ -429,15 +377,6 @@ func classifyPace(projected float64) pace {
 // ходу работы), и заголовок вкладки тогда называл бы не ту сессию
 func sessionDir(input Input) string {
 	return firstDir(input.Workspace.ProjectDir, input.CWD, input.Workspace.CurrentDir)
-}
-
-// gitDir — каталог, чей git показывается. В worktree это текущий каталог: ветка
-// worktree отличается от ветки основного клона. Иначе — каталог сессии
-func gitDir(input Input) string {
-	if input.Workspace.GitWorktree != "" {
-		return firstDir(input.Workspace.CurrentDir, input.CWD, input.Workspace.ProjectDir)
-	}
-	return sessionDir(input)
 }
 
 func firstDir(candidates ...string) string {

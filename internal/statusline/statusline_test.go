@@ -1,7 +1,6 @@
 package statusline
 
 import (
-	"context"
 	"regexp"
 	"strings"
 	"testing"
@@ -61,43 +60,6 @@ func TestContextBar(t *testing.T) {
 	}
 }
 
-func TestGitSummary(t *testing.T) {
-	tests := []struct {
-		name     string
-		git      GitStatus
-		expected string
-	}{
-		{
-			name:     "чистый репозиторий",
-			git:      GitStatus{IsRepo: true, Branch: "main", Counted: true},
-			expected: "main",
-		},
-		{
-			name:     "изменения и расхождение с remote",
-			git:      GitStatus{IsRepo: true, Branch: "feature", Changed: 3, Ahead: 2, Behind: 1, Counted: true},
-			expected: "feature ●3 ↑2 ↓1",
-		},
-		{
-			name:     "git не успел посчитать",
-			git:      GitStatus{IsRepo: true, Branch: "main"},
-			expected: "main …",
-		},
-		{
-			name:     "отделённая HEAD",
-			git:      GitStatus{IsRepo: true, Branch: "a1b2c3d", Detached: true},
-			expected: "⚠ a1b2c3d",
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			if got := plain(gitSummary(tt.git)); got != tt.expected {
-				t.Errorf("ожидалось %q, получено %q", tt.expected, got)
-			}
-		})
-	}
-}
-
 func TestTerminalTitle(t *testing.T) {
 	tests := []struct {
 		name        string
@@ -130,9 +92,9 @@ func TestDetails(t *testing.T) {
 	input.Cost.LinesAdded = 412
 	input.Cost.LinesRemoved = 87
 
-	parts := details(input, GitStatus{IsRepo: true, Branch: "main", Counted: true}, weekBar{label: "нед"}, time.Now())
+	parts := details(input, weekBar{label: "нед"}, time.Now())
 
-	expected := []string{"main", "Opus 5·high", "ctx ▓▓▓▓░░░░░░ 47%", "+412 −87"}
+	expected := []string{"Opus 5·high", "ctx ▓▓▓▓░░░░░░ 47%", "+412 −87"}
 	if len(parts) != len(expected) {
 		t.Fatalf("ожидалось %d элементов, получено %d: %q", len(expected), len(parts), parts)
 	}
@@ -164,7 +126,7 @@ func TestBuildFitsSingleLine(t *testing.T) {
 	input.Model.DisplayName = "Opus 5 (1M context)"
 	input.ContextWindow.UsedPercentage = 47
 
-	line, title := build(context.Background(), input, weekBar{label: "нед"}, time.Now(), testLogger(t))
+	line, title := build(input, weekBar{label: "нед"}, time.Now(), testLogger(t))
 
 	if strings.Contains(line, "\n") {
 		t.Errorf("строка статуса должна умещаться в одну строку: %q", line)
@@ -179,7 +141,7 @@ func TestBuildFitsSingleLine(t *testing.T) {
 
 func TestDetailsSkipsMissingData(t *testing.T) {
 	// Claude Code передаёт не все поля: пустые сведения не должны давать пустых разделителей
-	if parts := details(Input{}, GitStatus{}, weekBar{label: "нед"}, time.Now()); len(parts) != 0 {
+	if parts := details(Input{}, weekBar{label: "нед"}, time.Now()); len(parts) != 0 {
 		t.Errorf("ожидался пустой список, получено %q", parts)
 	}
 }
@@ -189,20 +151,9 @@ func TestSessionDirIsLaunchDir(t *testing.T) {
 	input.Workspace.CurrentDir = "/from/current"
 	input.Workspace.ProjectDir = "/from/project"
 
-	// Агент ушёл в подпапку чужого проекта: имя и git остаются от каталога запуска
+	// Агент ушёл в подпапку чужого проекта: имя остаётся от каталога запуска
 	if got := sessionDir(input); got != "/from/project" {
 		t.Errorf("ожидалось /from/project, получено %q", got)
-	}
-	if got := gitDir(input); got != "/from/project" {
-		t.Errorf("git вне worktree: ожидалось /from/project, получено %q", got)
-	}
-
-	input.Workspace.GitWorktree = "feature"
-	if got := gitDir(input); got != "/from/current" {
-		t.Errorf("git в worktree: ожидалось /from/current, получено %q", got)
-	}
-	if got := sessionDir(input); got != "/from/project" {
-		t.Errorf("имя в worktree: ожидалось /from/project, получено %q", got)
 	}
 
 	input.Workspace.ProjectDir = ""
@@ -311,7 +262,7 @@ func TestDetailsWeekly(t *testing.T) {
 	input := Input{}
 	input.ContextWindow.UsedPercentage = 47
 	input.RateLimits.SevenDay = &WeeklyLimit{UsedPercentage: &used, ResetsAt: &resets}
-	parts := details(input, GitStatus{}, weekBar{label: "нед"}, now)
+	parts := details(input, weekBar{label: "нед"}, now)
 	expected := []string{"ctx ▓▓▓▓░░░░░░ 47%", "нед ▓▓▓▓▓░░░░░ 51%"}
 	if len(parts) != len(expected) {
 		t.Fatalf("ожидалось %q, получено %q", expected, parts)
@@ -329,7 +280,7 @@ func TestDetailsWeekly(t *testing.T) {
 		"нет процента":  {ResetsAt: &resets},
 	} {
 		input.RateLimits.SevenDay = limit
-		for _, part := range details(input, GitStatus{}, weekBar{label: "нед"}, now) {
+		for _, part := range details(input, weekBar{label: "нед"}, now) {
 			if strings.Contains(plain(part), "нед") {
 				t.Errorf("%s: блок недели не должен выводиться, получено %q", name, plain(part))
 			}

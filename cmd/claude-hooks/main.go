@@ -625,7 +625,7 @@ func newStatusLineCmd() *cobra.Command {
 			if err != nil {
 				return fmt.Errorf("failed to create logger: %w", err)
 			}
-			line, err := statusline.Render(cmd.Context(), os.Stdin, logger)
+			line, err := statusline.Render(os.Stdin, logger)
 			if err != nil {
 				return err
 			}
